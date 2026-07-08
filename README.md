@@ -1,0 +1,164 @@
+# OpenCode Intercom
+
+OpenCode Intercom is an OpenCode plugin that speaks the same local intercom
+protocol as `pi-intercom`, `codex-intercom`, and `claude-intercom`.
+
+It gives OpenCode native intercom tools and lets OpenCode participate in the
+same local multi-agent mesh as Pi, Codex, and Claude sessions.
+
+## What It Does
+
+- registers the current OpenCode session with the shared local broker
+- lists Pi, Codex, Claude, and OpenCode peers
+- sends and receives inter-agent messages
+- supports blocking ask/reply flows
+- injects inbound messages back into OpenCode so the receiving session can wake
+  up and continue from the message
+
+## Status
+
+Working prototype with real end-to-end proof.
+
+Proven working:
+
+- OpenCode plugin loads in real `opencode run`
+- startup registration works without needing an intercom tool call first
+- fresh Pi and Codex peers can be reached from OpenCode
+- fresh OpenCode receivers can be reached from Pi
+- busy headless `opencode run` receivers can wake after their current turn
+  finishes
+- verified exactly-once inbound delivery in headless run mode
+
+Not fully polished yet:
+
+- real interactive TUI UX still deserves more validation
+- reply behavior from injected turns should keep getting exercised in practice
+
+## Install From This Checkout
+
+```bash
+npm install
+npm run build
+```
+
+Add the plugin to OpenCode config:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["/home/dxyz/src/github.com/dataforxyz/opencode-intercom/dist/plugin.mjs"]
+}
+```
+
+Restart OpenCode after changing plugin config.
+
+## Tools
+
+- `intercom_whoami`: show this session's intercom ID, name, cwd, and model
+- `intercom_status`: show connection status and pending message counts
+- `intercom_list`: list local Pi, Codex, Claude, and OpenCode sessions
+- `intercom_set_summary`: publish a short discoverable status
+- `intercom_send`: send a non-blocking message
+- `intercom_ask`: send a question and wait briefly for the target's reply
+- `intercom_pending`: read queued inbound messages and unresolved asks
+- `intercom_reply`: reply to a pending inbound ask
+
+## Inbound Delivery Model
+
+Inbound messages always reach the runtime queue. From there, the plugin tries to
+deliver them into the active OpenCode session.
+
+Current delivery strategy:
+
+1. show a toast
+2. if OpenCode is running with a real TUI, try prompt append + submit
+3. if the target session is busy in headless/run mode, use `session.promptAsync`
+4. if the busy-path delivery is not confirmed, keep a fallback queue
+5. flush queued fallback messages on `session.idle`
+6. track delivered message IDs so a message is never injected twice
+
+That means busy `opencode run` sessions can now receive a real follow-up turn
+after their original tool call completes.
+
+## Quick Verification
+
+Start a long-lived receiver:
+
+```bash
+OPENCODE_CONFIG_CONTENT='{"$schema":"https://opencode.ai/config.json","plugin":["/home/dxyz/src/github.com/dataforxyz/opencode-intercom/dist/plugin.mjs"],"permission":{"bash":"allow"}}' \
+OPENCODE_INTERCOM_NAME=opencode-live-test \
+OPENCODE_INTERCOM_SESSION_ID=opencode-live-test \
+opencode run --auto --format json "Run bash command sleep 60. Then output done. Do not call any intercom tools."
+```
+
+Confirm it registered from Pi:
+
+```bash
+PI_INTERCOM_SESSION_ID=pi-list-test \
+pi --no-extensions --extension /home/dxyz/src/github.com/dataforxyz/pi-intercom/index.ts --no-skills --mode json --print "Use the intercom tool with action list once. Output only the tool result."
+```
+
+Send a message from Pi while the receiver is still in `sleep`:
+
+```bash
+PI_INTERCOM_SESSION_ID=pi-send-test \
+pi --no-extensions --extension /home/dxyz/src/github.com/dataforxyz/pi-intercom/index.ts --no-skills --mode json --print "Use the intercom tool with action send to send this exact message to opencode-live-test: hello from pi live test. Output only the tool result."
+```
+
+Then inspect the receiver session:
+
+```bash
+opencode export <session-id>
+```
+
+Expected result:
+
+- the original `sleep` turn finishes
+- a new user turn appears with the inbound intercom text
+- the inbound prompt appears exactly once
+
+## Debugging
+
+Enable inject-path logging with:
+
+```bash
+OPENCODE_INTERCOM_DEBUG=1
+```
+
+When enabled, the plugin writes structured injection logs to:
+
+```bash
+/tmp/intercom-inject.log
+```
+
+Useful things to inspect there:
+
+- whether the receiver was busy
+- whether TUI injection was skipped because the run was headless
+- whether `session.promptAsync` returned `204`
+- whether delivery was recorded exactly once
+
+## Environment
+
+| Variable | Purpose |
+|----------|---------|
+| `OPENCODE_INTERCOM_NAME` | Discoverable session name |
+| `OPENCODE_INTERCOM_SESSION_ID` | Stable intercom id |
+| `OPENCODE_INTERCOM_MODEL` | Model label shown to peers |
+| `OPENCODE_INTERCOM_DEBUG` | Enable `/tmp/intercom-inject.log` diagnostics when set to `1` |
+| `PI_INTERCOM_ASK_TIMEOUT_MS` | Shared default blocking-ask timeout, max 120000 |
+| `PI_CODING_AGENT_DIR` | Shared broker socket/config base, default `~/.pi/agent` |
+
+## Development
+
+```bash
+npm install
+npm run build
+npm test
+```
+
+See also:
+
+- `HANDOFF.md`
+- `NEXT_STEPS.md`
+- `PLAN.md`
