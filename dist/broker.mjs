@@ -1,6 +1,6 @@
 // broker/broker.ts
 import net from "net";
-import { existsSync, readFileSync as readFileSync2, renameSync as renameSync2, writeFileSync as writeFileSync2, unlinkSync } from "fs";
+import { existsSync, readFileSync as readFileSync3, renameSync as renameSync2, writeFileSync as writeFileSync3, unlinkSync as unlinkSync2 } from "fs";
 import { join as join2 } from "path";
 import { randomUUID as randomUUID2 } from "crypto";
 
@@ -177,10 +177,67 @@ function writeDurableJson(filePath, value) {
   }
 }
 
+// broker/ownership.ts
+import { closeSync as closeSync2, constants, openSync as openSync2, readFileSync as readFileSync2, unlinkSync, writeFileSync as writeFileSync2 } from "node:fs";
+function ownerPid(path) {
+  try {
+    const pid = Number.parseInt(readFileSync2(path, "utf8").trim(), 10);
+    return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+function pidIsAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code !== "ESRCH";
+  }
+}
+function acquireBrokerOwnership(path, pid = process.pid) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const fd = openSync2(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, INTERCOM_RUNTIME_FILE_MODE);
+      try {
+        writeFileSync2(fd, String(pid));
+      } finally {
+        closeSync2(fd);
+      }
+      restrictIntercomRuntimeFile(path);
+      return;
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      const existingPid = ownerPid(path);
+      if (existingPid !== null && pidIsAlive(existingPid)) {
+        throw new Error(`Intercom broker already owned by live process ${existingPid}`);
+      }
+      try {
+        unlinkSync(path);
+      } catch (unlinkError) {
+        if (unlinkError.code !== "ENOENT") throw unlinkError;
+      }
+    }
+  }
+  throw new Error("Could not acquire intercom broker ownership");
+}
+function releaseBrokerOwnership(path, pid = process.pid) {
+  if (ownerPid(path) !== pid) return;
+  try {
+    unlinkSync(path);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+}
+function hasBrokerOwnership(path, pid = process.pid) {
+  return ownerPid(path) === pid;
+}
+
 // broker/broker.ts
 var INTERCOM_DIR = getIntercomDirPath();
 var LISTEN_TARGET = getBrokerListenTarget();
 var PID_PATH = join2(INTERCOM_DIR, "broker.pid");
+var OWNER_PATH = join2(INTERCOM_DIR, "broker.owner");
 var PORT_PATH = getBrokerPortFilePath(INTERCOM_DIR);
 var ASK_STATE_PATH = getBrokerAskStateFilePath(INTERCOM_DIR);
 var BROKER_STATE_ID = randomUUID2();
@@ -270,10 +327,11 @@ var IntercomBroker = class {
   askTimeoutMs = getAskTimeoutMs();
   constructor() {
     ensureIntercomRuntimeDir(INTERCOM_DIR);
+    acquireBrokerOwnership(OWNER_PATH);
     this.loadAskEdges();
     if (typeof LISTEN_TARGET === "string" && process.platform !== "win32") {
       try {
-        unlinkSync(LISTEN_TARGET);
+        unlinkSync2(LISTEN_TARGET);
       } catch {
       }
     }
@@ -294,11 +352,11 @@ var IntercomBroker = class {
           port: address.port,
           stateId: BROKER_STATE_ID
         };
-        writeFileSync2(PORT_PATH, `${JSON.stringify(endpoint)}
+        writeFileSync3(PORT_PATH, `${JSON.stringify(endpoint)}
 `, { mode: INTERCOM_RUNTIME_FILE_MODE });
         restrictIntercomRuntimeFile(PORT_PATH);
       }
-      writeFileSync2(PID_PATH, String(process.pid), { mode: INTERCOM_RUNTIME_FILE_MODE });
+      writeFileSync3(PID_PATH, String(process.pid), { mode: INTERCOM_RUNTIME_FILE_MODE });
       restrictIntercomRuntimeFile(PID_PATH);
       console.log(`Intercom broker started (pid: ${process.pid})`);
     };
@@ -880,7 +938,7 @@ var IntercomBroker = class {
       return;
     }
     try {
-      const parsed = JSON.parse(readFileSync2(ASK_STATE_PATH, "utf-8"));
+      const parsed = JSON.parse(readFileSync3(ASK_STATE_PATH, "utf-8"));
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
         throw new Error("expected an object");
       }
@@ -1058,19 +1116,23 @@ var IntercomBroker = class {
       clearTimeout(edge.timeout);
     }
     this.askEdges.clear();
-    if (typeof LISTEN_TARGET === "string" && process.platform !== "win32") {
+    const ownsBroker = hasBrokerOwnership(OWNER_PATH);
+    if (ownsBroker && typeof LISTEN_TARGET === "string" && process.platform !== "win32") {
       try {
-        unlinkSync(LISTEN_TARGET);
+        unlinkSync2(LISTEN_TARGET);
       } catch {
       }
     }
-    try {
-      unlinkSync(PORT_PATH);
-    } catch {
-    }
-    try {
-      unlinkSync(PID_PATH);
-    } catch {
+    if (ownsBroker) {
+      try {
+        unlinkSync2(PORT_PATH);
+      } catch {
+      }
+      try {
+        unlinkSync2(PID_PATH);
+      } catch {
+      }
+      releaseBrokerOwnership(OWNER_PATH);
     }
     this.server.close();
     process.exit(0);
