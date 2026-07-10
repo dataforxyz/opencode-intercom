@@ -18,9 +18,8 @@ function resultText(result: { content: Array<{ type: "text"; text: string }>; is
 }
 
 function listScope(value: string | undefined): "machine" | "directory" | "repo" {
-  if (value === undefined || value === "machine" || value === "directory" || value === "repo") {
-    return value ?? "machine";
-  }
+  if (value === undefined) return "machine";
+  if (value === "machine" || value === "directory" || value === "repo") return value;
   throw new Error('scope must be one of "machine", "directory", or "repo"');
 }
 

@@ -3,7 +3,7 @@ import { appendFileSync } from "fs";
 import { tool } from "@opencode-ai/plugin";
 
 // opencode/runtime.ts
-import { randomUUID as randomUUID2, createHash } from "crypto";
+import { randomUUID as randomUUID4, createHash as createHash2 } from "crypto";
 import { spawnSync } from "child_process";
 import { basename } from "path";
 import { cwd as processCwd } from "process";
@@ -11,7 +11,7 @@ import { cwd as processCwd } from "process";
 // broker/client.ts
 import { EventEmitter } from "events";
 import net from "net";
-import { randomUUID } from "crypto";
+import { randomUUID as randomUUID2 } from "crypto";
 
 // broker/framing.ts
 var MAX_FRAME_BYTES = 1024 * 1024;
@@ -77,23 +77,68 @@ function createMessageReader(onMessage, onError, maxFrameBytes = MAX_FRAME_BYTES
   };
 }
 
+// outbound-outbox.ts
+import { createHash } from "crypto";
+import { chmodSync as chmodSync2, existsSync, mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync as renameSync2 } from "fs";
+import { join as join2 } from "path";
+
 // broker/paths.ts
-import { chmodSync, mkdirSync } from "fs";
-import { join } from "path";
+import { chmodSync, mkdirSync, readFileSync } from "fs";
+import { isAbsolute, join, resolve } from "path";
 import { homedir } from "os";
 var INTERCOM_DIR_MODE = 448;
 var INTERCOM_RUNTIME_FILE_MODE = 384;
+var INTERCOM_TCP_HOST = "127.0.0.1";
+var INTERCOM_PROTOCOL_NAME = "pi-intercom";
+var INTERCOM_PROTOCOL_VERSION = 3;
 function sanitizePipeSegment(value) {
   return value.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase() || "default";
 }
-function getIntercomDirPath(homeDir = homedir()) {
-  return join(homeDir, ".pi/agent/intercom");
-}
-function getBrokerSocketPath(platform = process.platform, homeDir = homedir()) {
-  if (platform === "win32") {
-    return `\\\\.\\pipe\\pi-intercom-${sanitizePipeSegment(homeDir)}`;
+function getAgentDirPath(env = process.env, homeDir = homedir(), cwd = process.cwd()) {
+  const configured = env.PI_CODING_AGENT_DIR?.trim();
+  if (!configured) {
+    return join(homeDir, ".pi/agent");
   }
-  return join(getIntercomDirPath(homeDir), "broker.sock");
+  return isAbsolute(configured) ? configured : resolve(cwd, configured);
+}
+function getIntercomDirPath(agentDir = getAgentDirPath()) {
+  return join(agentDir, "intercom");
+}
+function shouldUseWindowsTcpTransport(platform = process.platform, env = process.env) {
+  if (platform !== "win32") {
+    return false;
+  }
+  const transport = env.PI_INTERCOM_TRANSPORT?.trim().toLowerCase();
+  if (transport === "tcp") {
+    return true;
+  }
+  const legacyOptIn = env.PI_INTERCOM_TCP?.trim().toLowerCase();
+  return legacyOptIn === "1" || legacyOptIn === "true";
+}
+function getBrokerPortFilePath(intercomDir = getIntercomDirPath()) {
+  return join(intercomDir, "broker.port.json");
+}
+function getBrokerSocketPath(platform = process.platform, agentDir = getAgentDirPath()) {
+  if (platform === "win32") {
+    return `\\\\.\\pipe\\pi-intercom-${sanitizePipeSegment(agentDir)}`;
+  }
+  return join(getIntercomDirPath(agentDir), "broker.sock");
+}
+function getBrokerConnectTarget(platform = process.platform, env = process.env, intercomDir = getIntercomDirPath(getAgentDirPath(env))) {
+  if (shouldUseWindowsTcpTransport(platform, env)) {
+    const endpointFile = getBrokerPortFilePath(intercomDir);
+    const raw = readFileSync(endpointFile, "utf-8");
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      throw new Error(`Invalid intercom TCP endpoint at ${endpointFile}: expected a JSON object`);
+    }
+    const endpoint = parsed;
+    if (endpoint.transport !== "tcp" || endpoint.host !== INTERCOM_TCP_HOST || typeof endpoint.port !== "number" || !Number.isSafeInteger(endpoint.port) || endpoint.port <= 0 || endpoint.port > 65535 || typeof endpoint.stateId !== "string" || endpoint.stateId.length === 0) {
+      throw new Error(`Invalid intercom TCP endpoint at ${endpointFile}`);
+    }
+    return { transport: "tcp", host: endpoint.host, port: endpoint.port, stateId: endpoint.stateId };
+  }
+  return getBrokerSocketPath(platform, getAgentDirPath(env));
 }
 function ensureIntercomRuntimeDir(intercomDir = getIntercomDirPath(), platform = process.platform) {
   mkdirSync(intercomDir, { recursive: true, mode: INTERCOM_DIR_MODE });
@@ -107,10 +152,122 @@ function restrictIntercomRuntimeFile(filePath, platform = process.platform) {
   }
 }
 
+// durable-json.ts
+import { randomUUID } from "crypto";
+import { closeSync, fsyncSync, openSync, renameSync, writeFileSync } from "fs";
+import { dirname } from "path";
+function writeDurableJson(filePath, value) {
+  const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(temporaryPath, JSON.stringify(value), { encoding: "utf-8", mode: INTERCOM_RUNTIME_FILE_MODE });
+  const fileDescriptor = openSync(temporaryPath, "r");
+  try {
+    fsyncSync(fileDescriptor);
+  } finally {
+    closeSync(fileDescriptor);
+  }
+  renameSync(temporaryPath, filePath);
+  restrictIntercomRuntimeFile(filePath);
+  if (process.platform !== "win32") {
+    const directoryDescriptor = openSync(dirname(filePath), "r");
+    try {
+      fsyncSync(directoryDescriptor);
+    } finally {
+      closeSync(directoryDescriptor);
+    }
+  }
+}
+
+// outbound-outbox.ts
+var OUTBOX_STATE_VERSION = 1;
+var MAX_OUTBOX_MESSAGES = 256;
+function fingerprint(entry) {
+  return JSON.stringify({
+    to: entry.to,
+    replyTo: entry.message.replyTo,
+    expectsReply: entry.message.expectsReply,
+    content: entry.message.content
+  });
+}
+function isStoredOutboundMessage(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const entry = value;
+  if (typeof entry.to !== "string" || typeof entry.queuedAt !== "number") return false;
+  if (typeof entry.message !== "object" || entry.message === null || Array.isArray(entry.message)) return false;
+  const message = entry.message;
+  return typeof message.id === "string" && typeof message.timestamp === "number" && typeof message.content === "object" && message.content !== null && typeof message.content.text === "string";
+}
+function fileName(sessionId) {
+  return `${createHash("sha256").update(sessionId).digest("hex")}.json`;
+}
+var PersistentOutboundOutbox = class {
+  directory;
+  filePath;
+  state;
+  constructor(sessionId, intercomDir = getIntercomDirPath()) {
+    ensureIntercomRuntimeDir(intercomDir);
+    this.directory = join2(intercomDir, "outbox");
+    mkdirSync2(this.directory, { recursive: true, mode: INTERCOM_DIR_MODE });
+    if (process.platform !== "win32") chmodSync2(this.directory, INTERCOM_DIR_MODE);
+    this.filePath = join2(this.directory, fileName(sessionId));
+    this.state = this.load();
+  }
+  list() {
+    return this.state.entries.map((entry) => ({ ...entry, message: { ...entry.message, content: { ...entry.message.content } } }));
+  }
+  enqueue(to, message) {
+    const existing = this.state.entries.find((entry) => entry.message.id === message.id);
+    if (existing) {
+      if (fingerprint(existing) !== fingerprint({ to, message })) {
+        throw new Error(`Message ID ${message.id} is already queued with a different payload`);
+      }
+      return "existing";
+    }
+    if (this.state.entries.length >= MAX_OUTBOX_MESSAGES) {
+      throw new Error(`Durable outbox is full (${MAX_OUTBOX_MESSAGES} messages)`);
+    }
+    this.state.entries.push({ to, message, queuedAt: Date.now() });
+    this.persist();
+    return "added";
+  }
+  remove(messageId) {
+    const remaining = this.state.entries.filter((entry) => entry.message.id !== messageId);
+    if (remaining.length === this.state.entries.length) return;
+    this.state.entries = remaining;
+    this.persist();
+  }
+  clear() {
+    if (this.state.entries.length === 0) return;
+    this.state.entries = [];
+    this.persist();
+  }
+  load() {
+    if (!existsSync(this.filePath)) return { version: OUTBOX_STATE_VERSION, entries: [] };
+    try {
+      const parsed = JSON.parse(readFileSync2(this.filePath, "utf-8"));
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("expected object");
+      const state = parsed;
+      if (state.version !== OUTBOX_STATE_VERSION || !Array.isArray(state.entries) || !state.entries.every(isStoredOutboundMessage)) {
+        throw new Error("invalid outbox state");
+      }
+      return { version: OUTBOX_STATE_VERSION, entries: state.entries };
+    } catch {
+      const corruptPath = `${this.filePath}.corrupt-${Date.now()}`;
+      renameSync2(this.filePath, corruptPath);
+      restrictIntercomRuntimeFile(corruptPath);
+      return { version: OUTBOX_STATE_VERSION, entries: [] };
+    }
+  }
+  persist() {
+    writeDurableJson(this.filePath, this.state);
+  }
+};
+
 // broker/client.ts
-var BROKER_SOCKET = getBrokerSocketPath();
 function toError(error) {
   return error instanceof Error ? error : new Error(String(error));
+}
+function connectToBrokerTarget(target) {
+  return typeof target === "string" ? net.connect(target) : net.connect({ host: target.host, port: target.port });
 }
 function isAttachment(value) {
   if (typeof value !== "object" || value === null) {
@@ -159,13 +316,21 @@ function isSessionInfo(value) {
   if (session.name !== void 0 && typeof session.name !== "string") {
     return false;
   }
-  return session.status === void 0 || typeof session.status === "string";
+  if (session.status !== void 0 && typeof session.status !== "string") {
+    return false;
+  }
+  if (session.peerUid !== void 0 && typeof session.peerUid !== "number") {
+    return false;
+  }
+  return session.trustedLocal === void 0 || typeof session.trustedLocal === "boolean";
 }
 var IntercomClient = class extends EventEmitter {
   socket = null;
   _sessionId = null;
   pendingSends = /* @__PURE__ */ new Map();
   pendingLists = /* @__PURE__ */ new Map();
+  pendingAskControls = /* @__PURE__ */ new Map();
+  outbox = null;
   disconnecting = false;
   disconnectError = null;
   failPending(error) {
@@ -177,9 +342,17 @@ var IntercomClient = class extends EventEmitter {
       pending.reject(error);
     }
     this.pendingLists.clear();
+    for (const pending of this.pendingAskControls.values()) {
+      clearTimeout(pending.timeout);
+      pending.resolve(false);
+    }
+    this.pendingAskControls.clear();
   }
   get sessionId() {
     return this._sessionId;
+  }
+  get outboxSize() {
+    return this.outbox?.list().length ?? 0;
   }
   isConnected() {
     const socket = this.socket;
@@ -202,8 +375,16 @@ var IntercomClient = class extends EventEmitter {
     if (this.socket) {
       return Promise.reject(new Error("Already connected"));
     }
-    return new Promise((resolve2, reject) => {
-      const socket = net.connect(BROKER_SOCKET);
+    return new Promise((resolve3, reject) => {
+      let socket;
+      let target;
+      try {
+        target = getBrokerConnectTarget();
+        socket = connectToBrokerTarget(target);
+      } catch (error) {
+        reject(toError(error));
+        return;
+      }
       this.socket = socket;
       this.disconnectError = null;
       let settled = false;
@@ -223,7 +404,7 @@ var IntercomClient = class extends EventEmitter {
         settled = true;
         connectionEstablished = true;
         cleanupConnectionAttempt();
-        resolve2();
+        resolve3();
       };
       const onError = (err) => {
         settled = true;
@@ -290,7 +471,14 @@ var IntercomClient = class extends EventEmitter {
       socket.on("error", onSocketError);
       this.once("_registered", onRegistered);
       try {
-        writeMessage(socket, { type: "register", session, ...sessionId ? { sessionId } : {} });
+        writeMessage(socket, {
+          type: "register",
+          protocol: INTERCOM_PROTOCOL_NAME,
+          version: INTERCOM_PROTOCOL_VERSION,
+          session,
+          ...sessionId ? { sessionId } : {},
+          ...typeof target === "string" ? {} : { stateId: target.stateId }
+        });
       } catch (error) {
         cleanupConnectionAttempt();
         cleanupSocketListeners();
@@ -307,18 +495,20 @@ var IntercomClient = class extends EventEmitter {
       throw new Error("Invalid broker message");
     }
     const brokerMessage = msg;
-    if (this._sessionId === null && brokerMessage.type !== "registered") {
+    if (this._sessionId === null && brokerMessage.type !== "registered" && brokerMessage.type !== "error") {
       throw new Error(`Received ${brokerMessage.type} before registered`);
     }
     switch (brokerMessage.type) {
       case "registered": {
-        if (typeof brokerMessage.sessionId !== "string") {
+        if (typeof brokerMessage.sessionId !== "string" || brokerMessage.protocol !== INTERCOM_PROTOCOL_NAME || brokerMessage.version !== INTERCOM_PROTOCOL_VERSION) {
           throw new Error("Invalid registered message");
         }
         if (this._sessionId !== null) {
           throw new Error("Received duplicate registered message");
         }
         this._sessionId = brokerMessage.sessionId;
+        this.outbox = new PersistentOutboundOutbox(brokerMessage.sessionId);
+        this.replayOutbox();
         this.emit("_registered", { type: "registered", sessionId: brokerMessage.sessionId });
         break;
       }
@@ -336,37 +526,90 @@ var IntercomClient = class extends EventEmitter {
         break;
       }
       case "message": {
-        const { from, message } = brokerMessage;
-        if (!isSessionInfo(from) || !isMessage(message)) {
+        const { deliveryId, from, message } = brokerMessage;
+        if (typeof deliveryId !== "string" || !isSessionInfo(from) || !isMessage(message)) {
           throw new Error("Invalid message event");
         }
-        this.emit("message", from, message);
+        this.emit("message", from, message, deliveryId);
+        break;
+      }
+      case "delivery_accepted": {
+        const { deliveryId, messageId } = brokerMessage;
+        if (typeof deliveryId !== "string" || typeof messageId !== "string") {
+          throw new Error("Invalid delivery_accepted message");
+        }
+        const pending = this.pendingSends.get(messageId);
+        if (!pending) {
+          return;
+        }
+        pending.accepted = true;
+        pending.deliveryId = deliveryId;
+        this.emit("delivery_accepted", messageId, deliveryId);
         break;
       }
       case "delivered": {
-        const { messageId } = brokerMessage;
-        if (typeof messageId !== "string") {
+        const { deliveryId, messageId } = brokerMessage;
+        if (typeof deliveryId !== "string" || typeof messageId !== "string") {
           throw new Error("Invalid delivered message");
         }
+        this.outbox?.remove(messageId);
         const pending = this.pendingSends.get(messageId);
         if (!pending) {
+          this.emit("outbox_delivered", messageId, deliveryId);
           return;
         }
         this.pendingSends.delete(messageId);
-        pending.resolve({ id: messageId, delivered: true });
+        pending.resolve({ id: messageId, accepted: true, delivered: true, deliveryId });
         break;
       }
       case "delivery_failed": {
-        const { messageId, reason } = brokerMessage;
-        if (typeof messageId !== "string" || typeof reason !== "string") {
+        const { accepted, code, messageId, reason } = brokerMessage;
+        if (typeof accepted !== "boolean" || typeof code !== "string" || typeof messageId !== "string" || typeof reason !== "string") {
           throw new Error("Invalid delivery_failed message");
         }
+        this.outbox?.remove(messageId);
         const pending = this.pendingSends.get(messageId);
         if (!pending) {
+          this.emit("outbox_failed", messageId, code, reason);
           return;
         }
         this.pendingSends.delete(messageId);
-        pending.resolve({ id: messageId, delivered: false, reason });
+        pending.resolve({
+          id: messageId,
+          accepted,
+          delivered: false,
+          code,
+          reason,
+          ...pending.deliveryId ? { deliveryId: pending.deliveryId } : {}
+        });
+        break;
+      }
+      case "ask_deferred": {
+        const { fromSessionId, messageId } = brokerMessage;
+        if (typeof fromSessionId !== "string" || typeof messageId !== "string") {
+          throw new Error("Invalid ask_deferred message");
+        }
+        this.emit("ask_deferred", messageId, fromSessionId);
+        break;
+      }
+      case "ask_cancelled": {
+        const { fromSessionId, messageId, reason } = brokerMessage;
+        if (typeof fromSessionId !== "string" || typeof messageId !== "string" || typeof reason !== "string") {
+          throw new Error("Invalid ask_cancelled message");
+        }
+        this.emit("ask_cancelled", messageId, fromSessionId, reason);
+        break;
+      }
+      case "ask_control_result": {
+        const { action, applied, messageId, requestId } = brokerMessage;
+        if (action !== "defer" && action !== "cancel" || typeof applied !== "boolean" || typeof messageId !== "string" || typeof requestId !== "string") {
+          throw new Error("Invalid ask_control_result message");
+        }
+        const pending = this.pendingAskControls.get(requestId);
+        if (!pending) return;
+        clearTimeout(pending.timeout);
+        this.pendingAskControls.delete(requestId);
+        pending.resolve(applied);
         break;
       }
       case "session_joined": {
@@ -391,17 +634,24 @@ var IntercomClient = class extends EventEmitter {
         break;
       }
       case "error": {
-        if (typeof brokerMessage.error !== "string") {
+        if (typeof brokerMessage.code !== "string" || typeof brokerMessage.error !== "string") {
           throw new Error("Invalid error message");
         }
-        this.emit("error", new Error(brokerMessage.error));
+        if (this._sessionId === null) {
+          const error2 = new Error(brokerMessage.error);
+          error2.code = brokerMessage.code;
+          throw error2;
+        }
+        const error = new Error(brokerMessage.error);
+        error.code = brokerMessage.code;
+        this.emit("error", error);
         break;
       }
       default:
         throw new Error(`Unknown broker message type: ${brokerMessage.type}`);
     }
   }
-  async disconnect() {
+  async disconnect(preserveAsks = false) {
     const socket = this.socket;
     if (!socket) {
       return;
@@ -409,7 +659,8 @@ var IntercomClient = class extends EventEmitter {
     this.disconnecting = true;
     this.disconnectError = null;
     this.failPending(new Error("Client disconnected"));
-    await new Promise((resolve2) => {
+    if (!preserveAsks) this.outbox?.clear();
+    await new Promise((resolve3) => {
       let settled = false;
       const finish = () => {
         if (settled) {
@@ -419,7 +670,7 @@ var IntercomClient = class extends EventEmitter {
         clearTimeout(timeout);
         socket.off("close", onClose);
         socket.off("error", onError);
-        resolve2();
+        resolve3();
       };
       const onClose = () => finish();
       const onError = () => {
@@ -431,7 +682,7 @@ var IntercomClient = class extends EventEmitter {
       socket.once("close", onClose);
       socket.once("error", onError);
       try {
-        writeMessage(socket, { type: "unregister" });
+        writeMessage(socket, { type: "unregister", ...preserveAsks ? { preserveAsks: true } : {} });
         socket.end();
       } catch {
         socket.destroy();
@@ -445,11 +696,11 @@ var IntercomClient = class extends EventEmitter {
     } catch (error) {
       return Promise.reject(toError(error));
     }
-    return new Promise((resolve2, reject) => {
-      const requestId = randomUUID();
+    return new Promise((resolve3, reject) => {
+      const requestId = randomUUID2();
       const wrappedResolve = (sessions) => {
         clearTimeout(timeout);
-        resolve2(sessions);
+        resolve3(sessions);
       };
       const wrappedReject = (error) => {
         clearTimeout(timeout);
@@ -478,7 +729,16 @@ var IntercomClient = class extends EventEmitter {
     } catch (error) {
       return Promise.reject(toError(error));
     }
-    const messageId = options.messageId ?? randomUUID();
+    const messageId = options.messageId ?? randomUUID2();
+    if (this.pendingSends.has(messageId)) {
+      return Promise.resolve({
+        id: messageId,
+        accepted: false,
+        delivered: false,
+        code: "DUPLICATE_MESSAGE_ID",
+        reason: `Message ID ${messageId} is already pending`
+      });
+    }
     const message = {
       id: messageId,
       timestamp: Date.now(),
@@ -489,10 +749,15 @@ var IntercomClient = class extends EventEmitter {
         attachments: options.attachments
       }
     };
-    return new Promise((resolve2, reject) => {
+    try {
+      this.outbox?.enqueue(to, message);
+    } catch (error) {
+      return Promise.reject(toError(error));
+    }
+    return new Promise((resolve3, reject) => {
       const wrappedResolve = (result) => {
         clearTimeout(timeout);
-        resolve2(result);
+        resolve3(result);
       };
       const wrappedReject = (error) => {
         clearTimeout(timeout);
@@ -504,7 +769,11 @@ var IntercomClient = class extends EventEmitter {
           wrappedReject(new Error("Send timeout"));
         }
       }, 1e4);
-      this.pendingSends.set(messageId, { resolve: wrappedResolve, reject: wrappedReject });
+      this.pendingSends.set(messageId, {
+        accepted: false,
+        resolve: wrappedResolve,
+        reject: wrappedReject
+      });
       try {
         writeMessage(socket, { type: "send", to, message });
       } catch (error) {
@@ -514,17 +783,59 @@ var IntercomClient = class extends EventEmitter {
       }
     });
   }
+  acknowledgeMessage(deliveryId) {
+    return this.writeControlMessage({ type: "message_received", deliveryId });
+  }
+  rejectMessage(deliveryId, reason) {
+    return this.writeControlMessage({ type: "message_rejected", deliveryId, code: "CONFLICTING_MESSAGE_ID", reason });
+  }
+  deferAsk(messageId) {
+    return this.sendAskControl("defer", messageId);
+  }
   cancelAsk(messageId) {
+    return this.sendAskControl("cancel", messageId);
+  }
+  sendAskControl(action, messageId) {
+    const requestId = randomUUID2();
+    return new Promise((resolve3) => {
+      const timeout = setTimeout(() => {
+        this.pendingAskControls.delete(requestId);
+        resolve3(false);
+      }, 2e3);
+      timeout.unref?.();
+      this.pendingAskControls.set(requestId, { resolve: resolve3, timeout });
+      if (!this.writeControlMessage({ type: action === "defer" ? "defer_ask" : "cancel_ask", requestId, messageId })) {
+        clearTimeout(timeout);
+        this.pendingAskControls.delete(requestId);
+        resolve3(false);
+      }
+    });
+  }
+  writeControlMessage(message) {
     if (this.disconnecting) {
-      return;
+      return false;
     }
     const socket = this.socket;
     if (!socket || !this._sessionId || socket.destroyed || socket.writableEnded || !socket.writable) {
-      return;
+      return false;
     }
     try {
-      writeMessage(socket, { type: "cancel_ask", messageId });
+      writeMessage(socket, message);
+      return true;
     } catch {
+      return false;
+    }
+  }
+  replayOutbox() {
+    const socket = this.socket;
+    if (!socket || !this._sessionId || socket.destroyed || socket.writableEnded || !socket.writable) return;
+    for (const entry of this.outbox?.list() ?? []) {
+      if (this.pendingSends.has(entry.message.id)) continue;
+      try {
+        writeMessage(socket, { type: "send", to: entry.to, message: entry.message });
+      } catch {
+        return;
+      }
     }
   }
   updatePresence(updates) {
@@ -541,60 +852,42 @@ var IntercomClient = class extends EventEmitter {
 
 // broker/spawn.ts
 import { spawn } from "child_process";
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
-import { join as join2, dirname } from "path";
+import { existsSync as existsSync2, readFileSync as readFileSync3, unlinkSync, writeFileSync as writeFileSync2 } from "fs";
+import { join as join3, dirname as dirname2 } from "path";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
 import net2 from "net";
+import { randomUUID as randomUUID3 } from "crypto";
 var INTERCOM_DIR = getIntercomDirPath();
-var EXTENSION_DIR = join2(dirname(fileURLToPath(import.meta.url)), "..");
-var BROKER_SOCKET2 = getBrokerSocketPath();
-var BROKER_PID = join2(INTERCOM_DIR, "broker.pid");
-var BROKER_SPAWN_LOCK = join2(INTERCOM_DIR, "broker.spawn.lock");
+var EXTENSION_DIR = join3(dirname2(fileURLToPath(import.meta.url)), "..");
+var BROKER_PID = join3(INTERCOM_DIR, "broker.pid");
+var BROKER_SPAWN_LOCK = join3(INTERCOM_DIR, "broker.spawn.lock");
 function sleep(ms) {
-  return new Promise((resolve2) => setTimeout(resolve2, ms));
+  return new Promise((resolve3) => setTimeout(resolve3, ms));
 }
 function getTsxCliPath(extensionDir = EXTENSION_DIR) {
   try {
     const requireFromExtension = createRequire(import.meta.url);
     const tsxMain = requireFromExtension.resolve("tsx");
-    return join2(dirname(tsxMain), "cli.mjs");
+    return join3(dirname2(tsxMain), "cli.mjs");
   } catch {
-    return join2(extensionDir, "node_modules", "tsx", "dist", "cli.mjs");
+    return join3(extensionDir, "node_modules", "tsx", "dist", "cli.mjs");
   }
 }
 function quoteWindowsArg(value) {
   return `"${value.replace(/"/g, '""')}"`;
 }
 function getWindowsHiddenLauncherPath(intercomDir = INTERCOM_DIR) {
-  return join2(intercomDir, "broker-launch.vbs");
+  return join3(intercomDir, "broker-launch.vbs");
 }
 function usesDefaultBrokerCommand(brokerCommand, brokerArgs) {
   return brokerCommand === "npx" && brokerArgs.length === 2 && brokerArgs[0] === "--no-install" && brokerArgs[1] === "tsx";
 }
-function getBrokerScriptPath(moduleUrl = import.meta.url) {
-  const currentDir = dirname(fileURLToPath(moduleUrl));
-  const bundledBrokerPath = join2(currentDir, "broker.mjs");
-  if (existsSync(bundledBrokerPath)) {
-    return bundledBrokerPath;
-  }
-  return join2(currentDir, "broker.ts");
-}
-function getEffectiveBrokerCommand(brokerPath, brokerCommand, brokerArgs, nodePath = process.execPath) {
-  if (brokerPath.endsWith(".mjs") && usesDefaultBrokerCommand(brokerCommand, brokerArgs)) {
-    return { command: nodePath, args: [] };
-  }
-  return { command: brokerCommand, args: brokerArgs };
-}
 function getWindowsBrokerCommandLine(brokerPath, extensionDir = EXTENSION_DIR, nodePath = process.execPath, brokerCommand = "npx", brokerArgs = ["--no-install", "tsx"]) {
-  const effective = getEffectiveBrokerCommand(brokerPath, brokerCommand, brokerArgs, nodePath);
-  if (effective.command === nodePath && effective.args.length === 0) {
-    return [quoteWindowsArg(nodePath), quoteWindowsArg(brokerPath)].join(" ");
-  }
-  if (usesDefaultBrokerCommand(effective.command, effective.args)) {
+  if (usesDefaultBrokerCommand(brokerCommand, brokerArgs)) {
     return [quoteWindowsArg(nodePath), quoteWindowsArg(getTsxCliPath(extensionDir)), quoteWindowsArg(brokerPath)].join(" ");
   }
-  return [quoteWindowsArg(effective.command), ...effective.args.map(quoteWindowsArg), quoteWindowsArg(brokerPath)].join(" ");
+  return [quoteWindowsArg(brokerCommand), ...brokerArgs.map(quoteWindowsArg), quoteWindowsArg(brokerPath)].join(" ");
 }
 function getWindowsHiddenLauncherScript(commandLine) {
   return [
@@ -604,9 +897,16 @@ function getWindowsHiddenLauncherScript(commandLine) {
     ""
   ].join("\r\n");
 }
+function isBrokerHealthOkMessage(message, requestId) {
+  if (typeof message !== "object" || message === null || !("type" in message)) {
+    return false;
+  }
+  const response = message;
+  return response.type === "health_ok" && response.requestId === requestId && response.protocol === INTERCOM_PROTOCOL_NAME && response.version === INTERCOM_PROTOCOL_VERSION;
+}
 function writeWindowsHiddenLauncher(commandLine, launcherPath = getWindowsHiddenLauncherPath()) {
-  ensureIntercomRuntimeDir(dirname(launcherPath));
-  writeFileSync(launcherPath, getWindowsHiddenLauncherScript(commandLine), {
+  ensureIntercomRuntimeDir(dirname2(launcherPath));
+  writeFileSync2(launcherPath, getWindowsHiddenLauncherScript(commandLine), {
     encoding: "utf-8",
     mode: INTERCOM_RUNTIME_FILE_MODE
   });
@@ -614,7 +914,6 @@ function writeWindowsHiddenLauncher(commandLine, launcherPath = getWindowsHidden
   return launcherPath;
 }
 function getBrokerLaunchSpec(brokerPath, brokerCommand, brokerArgs, extensionDir = EXTENSION_DIR, platform = process.platform, intercomDir = INTERCOM_DIR, nodePath = process.execPath) {
-  const effective = getEffectiveBrokerCommand(brokerPath, brokerCommand, brokerArgs, nodePath);
   if (platform === "win32") {
     const launcherPath = getWindowsHiddenLauncherPath(intercomDir);
     return {
@@ -622,21 +921,28 @@ function getBrokerLaunchSpec(brokerPath, brokerCommand, brokerArgs, extensionDir
       command: "wscript.exe",
       args: [launcherPath],
       launcherPath,
-      launcherCommandLine: getWindowsBrokerCommandLine(brokerPath, extensionDir, nodePath, effective.command, effective.args)
+      launcherCommandLine: getWindowsBrokerCommandLine(brokerPath, extensionDir, nodePath, brokerCommand, brokerArgs)
+    };
+  }
+  if (usesDefaultBrokerCommand(brokerCommand, brokerArgs)) {
+    return {
+      kind: "direct",
+      command: nodePath,
+      args: [getTsxCliPath(extensionDir), brokerPath]
     };
   }
   return {
     kind: "direct",
-    command: effective.command,
-    args: [...effective.args, brokerPath]
+    command: brokerCommand,
+    args: [...brokerArgs, brokerPath]
   };
 }
-function getBrokerSpawnOptions(extensionDir = EXTENSION_DIR) {
+function getBrokerSpawnOptions(extensionDir = EXTENSION_DIR, env = process.env) {
   return {
     detached: true,
     stdio: "ignore",
     cwd: extensionDir,
-    env: { ...process.env, NODE_NO_WARNINGS: "1" },
+    env: { ...env, PI_CODING_AGENT_DIR: getAgentDirPath(env), NODE_NO_WARNINGS: "1" },
     windowsHide: true
   };
 }
@@ -657,14 +963,17 @@ async function spawnBrokerIfNeeded(brokerCommand, brokerArgs) {
     if (await isBrokerRunning()) {
       return;
     }
-    const brokerPath = getBrokerScriptPath();
+    if (await checkBrokerHealth() === "incompatible") {
+      await stopBrokerProcess();
+    }
+    const brokerPath = join3(dirname2(fileURLToPath(import.meta.url)), "broker.ts");
     const launch = getBrokerLaunchSpec(brokerPath, brokerCommand, brokerArgs);
     if (launch.kind === "windows-launcher") {
       writeWindowsHiddenLauncher(launch.launcherCommandLine, launch.launcherPath);
     }
     const child = spawn(launch.command, launch.args, getBrokerSpawnOptions());
     child.unref();
-    await new Promise((resolve2, reject) => {
+    await new Promise((resolve3, reject) => {
       const cleanup = () => {
         child.off("error", onError);
         child.off("exit", onExit);
@@ -688,7 +997,7 @@ async function spawnBrokerIfNeeded(brokerCommand, brokerArgs) {
       child.once("exit", onExit);
       waitForBroker().then(() => {
         cleanup();
-        resolve2();
+        resolve3();
       }, (error) => {
         cleanup();
         reject(toError2(error));
@@ -698,13 +1007,38 @@ async function spawnBrokerIfNeeded(brokerCommand, brokerArgs) {
     releaseSpawnLock();
   }
 }
+async function stopBrokerProcess(pidFile = BROKER_PID, timeoutMs = 3e3) {
+  if (!existsSync2(pidFile)) return;
+  let pid;
+  try {
+    pid = Number.parseInt(readFileSync3(pidFile, "utf-8").trim(), 10);
+  } catch {
+    return;
+  }
+  if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) return;
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    return;
+  }
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      process.kill(pid, 0);
+      await sleep(50);
+    } catch {
+      return;
+    }
+  }
+  throw new Error(`Incompatible intercom broker ${pid} did not stop within ${timeoutMs}ms`);
+}
 async function isBrokerRunning() {
   if (await checkSocketConnectable()) {
     return true;
   }
-  if (!existsSync(BROKER_PID)) return false;
+  if (!existsSync2(BROKER_PID)) return false;
   try {
-    const pid = parseInt(readFileSync(BROKER_PID, "utf-8").trim(), 10);
+    const pid = parseInt(readFileSync3(BROKER_PID, "utf-8").trim(), 10);
     if (!Number.isFinite(pid)) return false;
     process.kill(pid, 0);
     return checkSocketConnectable();
@@ -712,36 +1046,71 @@ async function isBrokerRunning() {
     return false;
   }
 }
-function checkSocketConnectable() {
-  return new Promise((resolve2) => {
-    const socket = net2.connect(BROKER_SOCKET2);
-    const finish = (isConnected) => {
+function connectToBrokerTarget2(target) {
+  return typeof target === "string" ? net2.connect(target) : net2.connect({ host: target.host, port: target.port });
+}
+async function checkSocketConnectable() {
+  return await checkBrokerHealth() === "compatible";
+}
+function checkBrokerHealth() {
+  return new Promise((resolve3) => {
+    let target;
+    try {
+      target = getBrokerConnectTarget();
+    } catch {
+      resolve3("unreachable");
+      return;
+    }
+    const socket = connectToBrokerTarget2(target);
+    const requestId = randomUUID3();
+    const expectedStateId = typeof target === "string" ? void 0 : target.stateId;
+    let settled = false;
+    const finish = (health) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
       clearTimeout(timeout);
       socket.off("connect", onConnect);
       socket.off("error", onError);
-      resolve2(isConnected);
+      socket.off("data", reader);
+      socket.destroy();
+      resolve3(health);
     };
     const onConnect = () => {
-      socket.end();
-      finish(true);
+      try {
+        writeMessage(socket, {
+          type: "health",
+          requestId,
+          ...expectedStateId ? { stateId: expectedStateId } : {}
+        });
+      } catch {
+        finish("unreachable");
+      }
     };
-    const onError = () => {
-      socket.destroy();
-      finish(false);
-    };
+    const onError = () => finish("unreachable");
+    const reader = createMessageReader((message) => {
+      if (isBrokerHealthOkMessage(message, requestId)) {
+        finish("compatible");
+        return;
+      }
+      if (typeof message === "object" && message !== null && "type" in message && message.type === "health_ok" && "requestId" in message && message.requestId === requestId) {
+        finish("incompatible");
+        return;
+      }
+      finish("unreachable");
+    }, () => finish("unreachable"));
     socket.on("connect", onConnect);
     socket.on("error", onError);
-    const timeout = setTimeout(() => {
-      socket.destroy();
-      finish(false);
-    }, 1e3);
+    socket.on("data", reader);
+    const timeout = setTimeout(() => finish("unreachable"), 1e3);
   });
 }
 function acquireSpawnLock() {
   const maxRetries = 5;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      writeFileSync(BROKER_SPAWN_LOCK, `${process.pid}
+      writeFileSync2(BROKER_SPAWN_LOCK, `${process.pid}
 ${Date.now()}
 `, {
         flag: "wx",
@@ -766,11 +1135,11 @@ ${Date.now()}
   return false;
 }
 function isSpawnLockStale() {
-  if (!existsSync(BROKER_SPAWN_LOCK)) {
+  if (!existsSync2(BROKER_SPAWN_LOCK)) {
     return false;
   }
   try {
-    const [pidLine = "", createdAtLine = "0"] = readFileSync(BROKER_SPAWN_LOCK, "utf-8").trim().split("\n");
+    const [pidLine = "", createdAtLine = "0"] = readFileSync3(BROKER_SPAWN_LOCK, "utf-8").trim().split("\n");
     const pid = Number.parseInt(pidLine, 10);
     const createdAt = Number.parseInt(createdAtLine, 10);
     const ageMs = Date.now() - createdAt;
@@ -804,8 +1173,8 @@ async function waitForBroker(timeoutMs = 5e3) {
 }
 
 // config.ts
-import { existsSync as existsSync2, readFileSync as readFileSync2 } from "fs";
-import { join as join3, resolve } from "path";
+import { existsSync as existsSync3, readFileSync as readFileSync4 } from "fs";
+import { join as join4, resolve as resolve2 } from "path";
 import { homedir as homedir2 } from "os";
 var DEFAULT_ASK_TIMEOUT_MS = 45 * 1e3;
 var MAX_ASK_TIMEOUT_MS = 120 * 1e3;
@@ -827,8 +1196,8 @@ function getAskTimeoutMs() {
   return validateAskTimeoutMs(value, "PI_INTERCOM_ASK_TIMEOUT_MS");
 }
 function getConfigPath() {
-  const agentDir = process.env.PI_CODING_AGENT_DIR ? resolve(process.env.PI_CODING_AGENT_DIR) : join3(homedir2(), ".pi", "agent");
-  return join3(agentDir, "intercom", "opencode-config.json");
+  const agentDir = process.env.PI_CODING_AGENT_DIR ? resolve2(process.env.PI_CODING_AGENT_DIR) : join4(homedir2(), ".pi", "agent");
+  return join4(agentDir, "intercom", "opencode-config.json");
 }
 var defaults = {
   brokerCommand: "npx",
@@ -837,11 +1206,11 @@ var defaults = {
 };
 function loadConfig() {
   const configPath = getConfigPath();
-  if (!existsSync2(configPath)) {
+  if (!existsSync3(configPath)) {
     return { ...defaults };
   }
   try {
-    const raw = readFileSync2(configPath, "utf-8");
+    const raw = readFileSync4(configPath, "utf-8");
     const parsed = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
       throw new Error("Config must be a JSON object");
@@ -886,7 +1255,7 @@ function loadConfig() {
 
 // opencode/runtime.ts
 function shortHash(value) {
-  return createHash("sha256").update(value).digest("hex").slice(0, 8);
+  return createHash2("sha256").update(value).digest("hex").slice(0, 8);
 }
 function buildOpenCodeRuntimeIdentity(env = process.env, cwd = env.PWD || processCwd(), pid = process.pid) {
   const sessionId = env.OPENCODE_INTERCOM_SESSION_ID?.trim() || env.OPENCODE_SESSION_ID?.trim() || `opencode-${pid}-${shortHash(cwd)}`;
@@ -985,8 +1354,8 @@ var OpenCodeIntercomRuntime = class {
     if (!config.enabled) throw new Error("Intercom disabled");
     await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs);
     const client = new IntercomClient();
-    client.on("message", (from, message) => {
-      this.handleIncomingMessage(from, message);
+    client.on("message", (from, message, deliveryId) => {
+      this.handleIncomingMessage(from, message, deliveryId);
     });
     client.on("disconnected", (error) => {
       for (const waiter of this.replyWaiters.values()) {
@@ -1014,7 +1383,7 @@ var OpenCodeIntercomRuntime = class {
     await this.client.disconnect();
     this.client = null;
   }
-  handleIncomingMessage(from, message) {
+  handleIncomingMessage(from, message, deliveryId) {
     const waiter = this.replyWaiters.get(message.replyTo ?? "");
     if (waiter) {
       const senderTarget = from.name || from.id;
@@ -1024,20 +1393,23 @@ var OpenCodeIntercomRuntime = class {
         clearTimeout(waiter.timeout);
         waiter.cleanup?.();
         waiter.resolve(message);
+        this.client?.acknowledgeMessage(deliveryId);
         return;
       }
     }
-    const entry = { from, message, receivedAt: Date.now(), read: false };
+    const entry = { from, message, deliveryId, receivedAt: Date.now(), read: false };
     this.unread.push(entry);
     if (message.expectsReply) {
       this.unresolvedAsks.set(message.id, entry);
     }
-    void Promise.resolve(this.onInboundMessage?.(entry)).catch((error) => {
+    void Promise.resolve(this.onInboundMessage?.(entry)).then(() => {
+      this.client?.acknowledgeMessage(deliveryId);
+    }).catch((error) => {
       console.error("Failed to inject inbound intercom message:", error);
     });
   }
   waitForReply(from, replyTo, timeoutMs = getAskTimeoutMs(), signal) {
-    return new Promise((resolve2, reject) => {
+    return new Promise((resolve3, reject) => {
       if (signal?.aborted) {
         reject(new Error("intercom_ask cancelled"));
         return;
@@ -1050,17 +1422,17 @@ var OpenCodeIntercomRuntime = class {
       const onAbort = () => {
         this.replyWaiters.delete(replyTo);
         cleanup();
-        this.client?.cancelAsk(replyTo);
+        void this.client?.cancelAsk(replyTo);
         reject(new Error("intercom_ask cancelled"));
       };
       timeout = setTimeout(() => {
         this.replyWaiters.delete(replyTo);
-        this.client?.cancelAsk(replyTo);
+        void this.client?.deferAsk(replyTo);
         signal?.removeEventListener("abort", onAbort);
         reject(new Error(`No reply from "${from}" within ${Math.round(timeoutMs / 1e3)} seconds`));
       }, timeoutMs);
       signal?.addEventListener("abort", onAbort, { once: true });
-      this.replyWaiters.set(replyTo, { from, replyTo, resolve: resolve2, reject, timeout, cleanup });
+      this.replyWaiters.set(replyTo, { from, replyTo, resolve: resolve3, reject, timeout, cleanup });
     });
   }
   async resolveTarget(to) {
@@ -1120,15 +1492,15 @@ Pending asks: ${this.unresolvedAsks.size}`,
     const sendTo = await this.resolveTarget(to);
     const result = await client.send(sendTo, { text: message, attachments, replyTo });
     if (!result.delivered) {
-      return textResult(`Message to "${to}" was not delivered: ${result.reason ?? "Session may not exist or has disconnected."}`, { ok: false, message_id: result.id, reason: result.reason }, true);
+      return textResult(`Message to "${to}" was not delivered: ${result.reason ?? "Session may not exist or has disconnected."}`, { ok: false, accepted: result.accepted, delivered: false, message_id: result.id, delivery_id: result.deliveryId, code: result.code, reason: result.reason }, true);
     }
     if (replyTo) this.unresolvedAsks.delete(replyTo);
-    return textResult(`Message sent to ${to}.`, { ok: true, message_id: result.id, to });
+    return textResult(`Message sent to ${to}.`, { ok: true, accepted: result.accepted, delivered: true, message_id: result.id, delivery_id: result.deliveryId, to });
   }
   async ask(to, message, attachments, timeoutMs = getAskTimeoutMs(), signal) {
     const client = await this.connect();
     const sendTo = await this.resolveTarget(to);
-    const questionId = randomUUID2();
+    const questionId = randomUUID4();
     const replyPromise = this.waitForReply(sendTo, questionId, timeoutMs, signal);
     void replyPromise.catch(() => void 0);
     try {
@@ -1204,9 +1576,8 @@ function resultText(result) {
   return text;
 }
 function listScope(value) {
-  if (value === void 0 || value === "machine" || value === "directory" || value === "repo") {
-    return value ?? "machine";
-  }
+  if (value === void 0) return "machine";
+  if (value === "machine" || value === "directory" || value === "repo") return value;
   throw new Error('scope must be one of "machine", "directory", or "repo"');
 }
 var OpenCodeIntercomPlugin = async ({ client, directory }) => {

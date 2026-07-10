@@ -18,6 +18,7 @@ export interface OpenCodeRuntimeIdentity {
 export interface PendingInboundMessage {
   from: SessionInfo;
   message: Message;
+  deliveryId: string;
   receivedAt: number;
   read: boolean;
 }
@@ -146,8 +147,8 @@ export class OpenCodeIntercomRuntime {
     if (!config.enabled) throw new Error("Intercom disabled");
     await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs);
     const client = new IntercomClient();
-    client.on("message", (from: SessionInfo, message: Message) => {
-      this.handleIncomingMessage(from, message);
+    client.on("message", (from: SessionInfo, message: Message, deliveryId: string) => {
+      this.handleIncomingMessage(from, message, deliveryId);
     });
     client.on("disconnected", (error: Error) => {
       for (const waiter of this.replyWaiters.values()) {
@@ -177,7 +178,7 @@ export class OpenCodeIntercomRuntime {
     this.client = null;
   }
 
-  private handleIncomingMessage(from: SessionInfo, message: Message): void {
+  private handleIncomingMessage(from: SessionInfo, message: Message, deliveryId: string): void {
     const waiter = this.replyWaiters.get(message.replyTo ?? "");
     if (waiter) {
       const senderTarget = from.name || from.id;
@@ -187,16 +188,19 @@ export class OpenCodeIntercomRuntime {
         clearTimeout(waiter.timeout);
         waiter.cleanup?.();
         waiter.resolve(message);
+        this.client?.acknowledgeMessage(deliveryId);
         return;
       }
     }
 
-    const entry = { from, message, receivedAt: Date.now(), read: false };
+    const entry = { from, message, deliveryId, receivedAt: Date.now(), read: false };
     this.unread.push(entry);
     if (message.expectsReply) {
       this.unresolvedAsks.set(message.id, entry);
     }
-    void Promise.resolve(this.onInboundMessage?.(entry)).catch((error) => {
+    void Promise.resolve(this.onInboundMessage?.(entry)).then(() => {
+      this.client?.acknowledgeMessage(deliveryId);
+    }).catch((error) => {
       console.error("Failed to inject inbound intercom message:", error);
     });
   }
@@ -215,12 +219,12 @@ export class OpenCodeIntercomRuntime {
       const onAbort = () => {
         this.replyWaiters.delete(replyTo);
         cleanup();
-        this.client?.cancelAsk(replyTo);
+        void this.client?.cancelAsk(replyTo);
         reject(new Error("intercom_ask cancelled"));
       };
       timeout = setTimeout(() => {
         this.replyWaiters.delete(replyTo);
-        this.client?.cancelAsk(replyTo);
+        void this.client?.deferAsk(replyTo);
         signal?.removeEventListener("abort", onAbort);
         reject(new Error(`No reply from "${from}" within ${Math.round(timeoutMs / 1000)} seconds`));
       }, timeoutMs);
@@ -287,10 +291,10 @@ export class OpenCodeIntercomRuntime {
     const sendTo = await this.resolveTarget(to);
     const result = await client.send(sendTo, { text: message, attachments, replyTo });
     if (!result.delivered) {
-      return textResult(`Message to "${to}" was not delivered: ${result.reason ?? "Session may not exist or has disconnected."}`, { ok: false, message_id: result.id, reason: result.reason }, true);
+      return textResult(`Message to "${to}" was not delivered: ${result.reason ?? "Session may not exist or has disconnected."}`, { ok: false, accepted: result.accepted, delivered: false, message_id: result.id, delivery_id: result.deliveryId, code: result.code, reason: result.reason }, true);
     }
     if (replyTo) this.unresolvedAsks.delete(replyTo);
-    return textResult(`Message sent to ${to}.`, { ok: true, message_id: result.id, to });
+    return textResult(`Message sent to ${to}.`, { ok: true, accepted: result.accepted, delivered: true, message_id: result.id, delivery_id: result.deliveryId, to });
   }
 
   async ask(to: string, message: string, attachments?: Attachment[], timeoutMs = getAskTimeoutMs(), signal?: AbortSignal): Promise<ToolResult> {

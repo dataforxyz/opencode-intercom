@@ -16,6 +16,12 @@ await Promise.all([
   }),
   build({
     ...common,
+    entryPoints: ["opencode/tui.ts"],
+    outfile: "dist/tui.mjs",
+    external: ["@opencode-ai/plugin/tui"],
+  }),
+  build({
+    ...common,
     entryPoints: ["broker/broker.ts"],
     outfile: "dist/broker.mjs",
   }),

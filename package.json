@@ -1,28 +1,35 @@
 {
   "name": "opencode-intercom",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "OpenCode plugin for direct local messaging with Pi, Codex, Claude, and OpenCode coding-agent sessions.",
   "license": "MIT",
   "type": "module",
   "main": "dist/plugin.mjs",
   "exports": {
-    ".": "./dist/plugin.mjs"
+    ".": "./dist/plugin.mjs",
+    "./tui": "./dist/tui.mjs"
   },
   "files": [
     "dist/**/*",
     "opencode/**/*.ts",
+    "!opencode/**/*.test.ts",
     "broker/**/*.ts",
+    "!broker/**/*.test.ts",
     "scripts/**/*",
     "types.ts",
     "config.ts",
+    "durable-json.ts",
+    "outbound-outbox.ts",
     "README.md",
+    "CHANGELOG.md",
     "PLAN.md",
     "LICENSE"
   ],
   "scripts": {
     "build": "node scripts/build.mjs",
     "prepare": "npm run build",
-    "test": "tsx --test broker/client.test.ts broker/framing.test.ts broker/paths.test.ts broker/spawn.test.ts"
+    "test": "tsx --test broker/client.test.ts broker/framing.test.ts broker/paths.test.ts broker/spawn.test.ts opencode/contact.test.ts",
+    "typecheck": "tsc --noEmit"
   },
   "keywords": [
     "opencode",
@@ -39,5 +46,6 @@
     "esbuild": "^0.28.1",
     "tsx": "^4.20.0",
     "typescript": "^6.0.3"
+    ,"@types/node": "^24.0.0"
   }
 }

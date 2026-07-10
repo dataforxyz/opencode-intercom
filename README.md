@@ -17,7 +17,7 @@ same local multi-agent mesh as Pi, Codex, and Claude sessions.
 
 ## Status
 
-Working prototype with real end-to-end proof.
+Protocol-v3 compatible with Pi Intercom 0.7 and the matching Codex/Claude adapters.
 
 Proven working:
 
@@ -29,10 +29,10 @@ Proven working:
   finishes
 - verified exactly-once inbound delivery in headless run mode
 
-Not fully polished yet:
-
-- real interactive TUI UX still deserves more validation
-- reply behavior from injected turns should keep getting exercised in practice
+- delivery is complete only after OpenCode confirms prompt injection
+- sends survive reconnects in a durable sender outbox and replay with the same ID
+- incompatible older brokers are detected and replaced safely
+- ask defer/cancel controls are broker-acknowledged, and timed-out asks remain late-replyable
 
 ## Install From This Checkout
 
@@ -46,11 +46,19 @@ Add the plugin to OpenCode config:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["/home/dxyz/src/github.com/dataforxyz/opencode-intercom/dist/plugin.mjs"]
+  "plugin": [
+    "/home/dxyz/src/github.com/dataforxyz/opencode-intercom/dist/plugin.mjs",
+    "/home/dxyz/src/github.com/dataforxyz/opencode-intercom/dist/tui.mjs"
+  ]
 }
 ```
 
 Restart OpenCode after changing plugin config.
+
+The optional TUI entry adds **Alt+I** and `/intercom-contact`. Both copy (or, if
+no system clipboard helper is installed, display) `intercom send ID: <id>`.
+Linux clipboard support uses `wl-copy`, `xclip`, or `xsel`; macOS uses
+`pbcopy`, and Windows uses `clip.exe`.
 
 ## Tools
 
@@ -75,7 +83,13 @@ Current delivery strategy:
 3. if the target session is busy in headless/run mode, use `session.promptAsync`
 4. if the busy-path delivery is not confirmed, keep a fallback queue
 5. flush queued fallback messages on `session.idle`
-6. track delivered message IDs so a message is never injected twice
+6. acknowledge delivery to the broker only after injection succeeds
+7. track delivered message IDs so a message is never injected twice
+
+Protocol delivery has two states: `accepted` means the broker has assigned a
+delivery ID; `delivered` means this receiver acknowledged successful injection.
+The sender outbox is stored below the shared intercom runtime directory and is
+replayed automatically after reconnect.
 
 That means busy `opencode run` sessions can now receive a real follow-up turn
 after their original tool call completes.
@@ -154,6 +168,7 @@ Useful things to inspect there:
 ```bash
 npm install
 npm run build
+npm run typecheck
 npm test
 ```
 
