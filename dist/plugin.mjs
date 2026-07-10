@@ -1482,6 +1482,11 @@ Pending asks: ${this.unresolvedAsks.size}`,
     }
     return textResult(formatSessionList(sessions, client.sessionId, this.identity.cwd), { sessions });
   }
+  async sessions(includeSelf = false) {
+    const client = await this.connect();
+    const sessions = await client.listSessions();
+    return includeSelf ? sessions : sessions.filter((session) => session.id !== client.sessionId);
+  }
   async setSummary(summary) {
     const client = await this.connect();
     client.updatePresence({ status: summary.trim() || "idle" });
@@ -1566,6 +1571,64 @@ ${pendingAsks.map((entry) => `- ${entry.message.id} from ${entry.from.name || en
   }
 };
 
+// opencode/control.ts
+import { randomUUID as randomUUID5 } from "node:crypto";
+import { mkdirSync as mkdirSync3, readFileSync as readFileSync5, readdirSync, renameSync as renameSync3, rmSync, writeFileSync as writeFileSync3 } from "node:fs";
+import { join as join5 } from "node:path";
+var CONTROL_DIR_NAME = "opencode-control";
+function controlDir() {
+  const directory = join5(getIntercomDirPath(), CONTROL_DIR_NAME);
+  mkdirSync3(directory, { recursive: true, mode: 448 });
+  return directory;
+}
+function safeSessionId(sessionId) {
+  return sessionId.replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+function responseName(sessionId, requestId) {
+  return `${safeSessionId(sessionId)}.${requestId}.response.json`;
+}
+function writeJsonAtomic(path, value) {
+  const temporary = `${path}.${process.pid}.${randomUUID5()}.tmp`;
+  writeFileSync3(temporary, JSON.stringify(value), { mode: 384 });
+  restrictIntercomRuntimeFile(temporary);
+  renameSync3(temporary, path);
+  restrictIntercomRuntimeFile(path);
+}
+function startOpenCodeControlServer(options) {
+  const directory = controlDir();
+  let processing = false;
+  const timer = setInterval(async () => {
+    if (processing) return;
+    processing = true;
+    try {
+      const files = readdirSync(directory).filter((file) => file.endsWith(".request.json"));
+      for (const file of files) {
+        const requestPath = join5(directory, file);
+        let request;
+        try {
+          request = JSON.parse(readFileSync5(requestPath, "utf8"));
+        } catch {
+          continue;
+        }
+        if (!request?.id || !request.sessionId || !options.acceptsSession(request.sessionId)) continue;
+        const responsePath = join5(directory, responseName(request.sessionId, request.id));
+        let response;
+        try {
+          response = { ok: true, value: await options.handle(request.action) };
+        } catch (error) {
+          response = { ok: false, error: error instanceof Error ? error.message : String(error) };
+        }
+        writeJsonAtomic(responsePath, response);
+        rmSync(requestPath, { force: true });
+      }
+    } finally {
+      processing = false;
+    }
+  }, 100);
+  timer.unref();
+  return () => clearInterval(timer);
+}
+
 // opencode/plugin.ts
 var INJECT_LOG_PATH = "/tmp/intercom-inject.log";
 function resultText(result) {
@@ -1583,6 +1646,7 @@ function listScope(value) {
 var OpenCodeIntercomPlugin = async ({ client, directory }) => {
   let activeSessionID = process.env.OPENCODE_SESSION_ID?.trim() || void 0;
   let activeSessionStatus = "idle";
+  const knownSessionIDs = /* @__PURE__ */ new Set();
   let flushingInjectQueue = false;
   const pendingInjectQueue = [];
   const deliveredMessageIDs = /* @__PURE__ */ new Set();
@@ -1623,6 +1687,7 @@ var OpenCodeIntercomPlugin = async ({ client, directory }) => {
   function setActiveSession(sessionID) {
     if (typeof sessionID === "string" && sessionID.trim()) {
       activeSessionID = sessionID;
+      knownSessionIDs.add(sessionID);
     }
   }
   function formatInboundPrompt(entry) {
@@ -1860,8 +1925,31 @@ This message expects a reply. Use intercom_reply with reply_to "${entry.message.
   void runtime.connect().catch((error) => {
     console.error("Failed to start OpenCode intercom listener:", error);
   });
+  void resolveActiveSessionID();
+  if (activeSessionID) knownSessionIDs.add(activeSessionID);
+  const stopControlServer = startOpenCodeControlServer({
+    acceptsSession: (sessionID) => knownSessionIDs.has(sessionID),
+    async handle(action) {
+      if (action.type === "whoami") {
+        return runtime.getIdentity();
+      }
+      if (action.type === "list") {
+        return runtime.sessions(false);
+      }
+      if (action.type === "send") {
+        if (typeof action.to !== "string" || typeof action.message !== "string" || !action.message.trim()) {
+          throw new Error("Invalid intercom send request.");
+        }
+        const result = await runtime.send(action.to, action.message);
+        if (result.isError) throw new Error(result.content.map((part) => part.text).join("\n"));
+        return result.structuredContent ?? { ok: true };
+      }
+      throw new Error("Unsupported OpenCode intercom action.");
+    }
+  });
   return {
     dispose: async () => {
+      stopControlServer();
       await runtime.disconnect();
     },
     tool: {

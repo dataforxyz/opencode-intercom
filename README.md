@@ -53,7 +53,7 @@ Add the server plugin to your normal OpenCode config (usually
 }
 ```
 
-To add **Alt+I** and `/intercom-contact`, put the separate TUI plugin in
+To add the native intercom picker and copy command, put the separate TUI plugin in
 `~/.config/opencode/tui.json`:
 
 ```json
@@ -69,10 +69,28 @@ OpenCode keeps server and TUI plugins in separate configuration files. Do not
 put `dist/tui.mjs` in `opencode.json`: the server plugin loader will reject it.
 Restart OpenCode after changing either config.
 
-The optional TUI plugin adds **Alt+I** and `/intercom-contact`. Both copy (or, if
-no system clipboard helper is installed, display) `intercom send ID: <id>`.
-Linux clipboard support uses `wl-copy`, `xclip`, or `xsel`; macOS uses
-`pbcopy`, and Windows uses `clip.exe`.
+The TUI plugin talks to the already-connected server plugin through a private
+local control bridge. It does not open another broker connection or register a
+second intercom identity. Both plugin entries are therefore required for the
+native commands.
+
+No wrapper alias is required for OpenCode: once both config files are present,
+plain `opencode` has the shortcuts and slash commands. This differs from hosts
+whose terminal wrappers are responsible for their keybindings.
+
+## TUI Commands
+
+| Action | Slash command | Shortcut |
+|---|---|---|
+| Choose a connected agent, compose, and send a message | `/intercom` | **Alt+M** |
+| Copy this session's exact intercom target | `/intercom-id` | **Alt+I** |
+
+`/intercom-contact` remains an alias for `/intercom-id`. The copy command uses
+the identity owned by the server plugin, so it remains correct even when the
+TUI and OpenCode server run in different processes. If no system clipboard
+helper is installed, the target is displayed in a toast instead. Linux support
+uses `wl-copy`, `xclip`, or `xsel`; macOS uses `pbcopy`, and Windows uses
+`clip.exe`.
 
 ## Tools
 

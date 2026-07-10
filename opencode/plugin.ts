@@ -1,6 +1,7 @@
 import { appendFileSync } from "fs";
 import { tool, type Plugin } from "@opencode-ai/plugin";
 import { OpenCodeIntercomRuntime, formatAttachments, type PendingInboundMessage } from "./runtime.ts";
+import { startOpenCodeControlServer } from "./control.ts";
 import { validateAskTimeoutMs } from "../config.ts";
 
 const INJECT_LOG_PATH = "/tmp/intercom-inject.log";
@@ -26,6 +27,7 @@ function listScope(value: string | undefined): "machine" | "directory" | "repo" 
 export const OpenCodeIntercomPlugin: Plugin = async ({ client, directory }) => {
   let activeSessionID = process.env.OPENCODE_SESSION_ID?.trim() || undefined;
   let activeSessionStatus = "idle";
+  const knownSessionIDs = new Set<string>();
   let flushingInjectQueue = false;
   const pendingInjectQueue: PendingInjectEntry[] = [];
   const deliveredMessageIDs = new Set<string>();
@@ -76,6 +78,7 @@ export const OpenCodeIntercomPlugin: Plugin = async ({ client, directory }) => {
   function setActiveSession(sessionID: unknown): void {
     if (typeof sessionID === "string" && sessionID.trim()) {
       activeSessionID = sessionID;
+      knownSessionIDs.add(sessionID);
     }
   }
 
@@ -335,9 +338,32 @@ export const OpenCodeIntercomPlugin: Plugin = async ({ client, directory }) => {
   void runtime.connect().catch((error) => {
     console.error("Failed to start OpenCode intercom listener:", error);
   });
+  void resolveActiveSessionID();
+  if (activeSessionID) knownSessionIDs.add(activeSessionID);
+  const stopControlServer = startOpenCodeControlServer({
+    acceptsSession: sessionID => knownSessionIDs.has(sessionID),
+    async handle(action) {
+      if (action.type === "whoami") {
+        return runtime.getIdentity();
+      }
+      if (action.type === "list") {
+        return runtime.sessions(false);
+      }
+      if (action.type === "send") {
+        if (typeof action.to !== "string" || typeof action.message !== "string" || !action.message.trim()) {
+          throw new Error("Invalid intercom send request.");
+        }
+        const result = await runtime.send(action.to, action.message);
+        if (result.isError) throw new Error(result.content.map(part => part.text).join("\n"));
+        return result.structuredContent ?? { ok: true };
+      }
+      throw new Error("Unsupported OpenCode intercom action.");
+    },
+  });
 
   return {
     dispose: async () => {
+      stopControlServer();
       await runtime.disconnect();
     },
 

@@ -280,6 +280,12 @@ export class OpenCodeIntercomRuntime {
     return textResult(formatSessionList(sessions, client.sessionId, this.identity.cwd), { sessions });
   }
 
+  async sessions(includeSelf = false): Promise<SessionInfo[]> {
+    const client = await this.connect();
+    const sessions = await client.listSessions();
+    return includeSelf ? sessions : sessions.filter((session) => session.id !== client.sessionId);
+  }
+
   async setSummary(summary: string): Promise<ToolResult> {
     const client = await this.connect();
     client.updatePresence({ status: summary.trim() || "idle" });
