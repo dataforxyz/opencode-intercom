@@ -3,7 +3,7 @@
 ## 1. Build
 
 ```bash
-cd /home/dxyz/src/github.com/dataforxyz/opencode-intercom
+cd /home/dxyz/src/github.com/dataforxyz/agent-intercom-opencode
 npm run build
 ```
 
@@ -11,7 +11,7 @@ npm run build
 
 ```bash
 OPENCODE_INTERCOM_DEBUG=1 \
-OPENCODE_CONFIG_CONTENT='{"$schema":"https://opencode.ai/config.json","plugin":["/home/dxyz/src/github.com/dataforxyz/opencode-intercom/dist/plugin.mjs"],"permission":{"bash":"allow"}}' \
+OPENCODE_CONFIG_CONTENT='{"$schema":"https://opencode.ai/config.json","plugin":["/home/dxyz/src/github.com/dataforxyz/agent-intercom-opencode/dist/plugin.mjs"],"permission":{"bash":"allow"}}' \
 OPENCODE_INTERCOM_NAME=opencode-live-test \
 OPENCODE_INTERCOM_SESSION_ID=opencode-live-test \
 opencode run --auto --format json "Run bash command sleep 120. Then output done. Do not call any intercom tools."
@@ -24,7 +24,7 @@ inject-path diagnostics to `/tmp/intercom-inject.log`.
 
 ```bash
 PI_INTERCOM_SESSION_ID=pi-list-test \
-pi --no-extensions --extension /home/dxyz/src/github.com/dataforxyz/pi-intercom/index.ts --no-skills --mode json --print "Use the intercom tool with action list once. Output only the tool result."
+pi --no-extensions --extension /home/dxyz/src/github.com/dataforxyz/agent-intercom-pi/index.ts --no-skills --mode json --print "Use the intercom tool with action list once. Output only the tool result."
 ```
 
 Look for `opencode-live-test` in the session list.
@@ -33,7 +33,7 @@ Look for `opencode-live-test` in the session list.
 
 ```bash
 PI_INTERCOM_SESSION_ID=pi-send-test \
-pi --no-extensions --extension /home/dxyz/src/github.com/dataforxyz/pi-intercom/index.ts --no-skills --mode json --print "Use the intercom tool with action send to send this exact message to opencode-live-test: hello from pi live test. Output only the tool result."
+pi --no-extensions --extension /home/dxyz/src/github.com/dataforxyz/agent-intercom-pi/index.ts --no-skills --mode json --print "Use the intercom tool with action send to send this exact message to opencode-live-test: hello from pi live test. Output only the tool result."
 ```
 
 ## 5. Verify OpenCode Received It

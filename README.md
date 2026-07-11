@@ -59,7 +59,7 @@ Add the server plugin to your normal OpenCode config (usually
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "/path/to/opencode-intercom/dist/plugin.mjs"
+    "/path/to/agent-intercom-opencode/dist/plugin.mjs"
   ]
 }
 ```
@@ -71,7 +71,7 @@ To add the native intercom picker and copy command, put the separate TUI plugin 
 {
   "$schema": "https://opencode.ai/tui.json",
   "plugin": [
-    "/path/to/opencode-intercom/dist/tui.mjs"
+    "/path/to/agent-intercom-opencode/dist/tui.mjs"
   ]
 }
 ```
@@ -142,7 +142,7 @@ after their original tool call completes.
 Start a long-lived receiver:
 
 ```bash
-OPENCODE_CONFIG_CONTENT='{"$schema":"https://opencode.ai/config.json","plugin":["/path/to/opencode-intercom/dist/plugin.mjs"],"permission":{"bash":"allow"}}' \
+OPENCODE_CONFIG_CONTENT='{"$schema":"https://opencode.ai/config.json","plugin":["/path/to/agent-intercom-opencode/dist/plugin.mjs"],"permission":{"bash":"allow"}}' \
 OPENCODE_INTERCOM_NAME=opencode-live-test \
 OPENCODE_INTERCOM_SESSION_ID=opencode-live-test \
 opencode run --auto --format json "Run bash command sleep 60. Then output done. Do not call any intercom tools."
@@ -152,14 +152,14 @@ Confirm it registered from Pi:
 
 ```bash
 PI_INTERCOM_SESSION_ID=pi-list-test \
-pi --no-extensions --extension /path/to/pi-intercom/index.ts --no-skills --mode json --print "Use the intercom tool with action list once. Output only the tool result."
+pi --no-extensions --extension /path/to/agent-intercom-pi/index.ts --no-skills --mode json --print "Use the intercom tool with action list once. Output only the tool result."
 ```
 
 Send a message from Pi while the receiver is still in `sleep`:
 
 ```bash
 PI_INTERCOM_SESSION_ID=pi-send-test \
-pi --no-extensions --extension /path/to/pi-intercom/index.ts --no-skills --mode json --print "Use the intercom tool with action send to send this exact message to opencode-live-test: hello from pi live test. Output only the tool result."
+pi --no-extensions --extension /path/to/agent-intercom-pi/index.ts --no-skills --mode json --print "Use the intercom tool with action send to send this exact message to opencode-live-test: hello from pi live test. Output only the tool result."
 ```
 
 Then inspect the receiver session:
