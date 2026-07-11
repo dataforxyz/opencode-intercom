@@ -1,10 +1,15 @@
 # OpenCode Intercom
 
-OpenCode Intercom is an OpenCode plugin that speaks the same local intercom
-protocol as `pi-intercom`, `codex-intercom`, and `claude-intercom`.
+**Agent Intercom** is a cross-harness, same-machine messaging system for coding agents. Its Pi, Codex, Claude Code, and OpenCode adapters share one local broker and protocol, so sessions can discover and message each other regardless of which harness they run in.
 
-It gives OpenCode native intercom tools and lets OpenCode participate in the
-same local multi-agent mesh as Pi, Codex, and Claude sessions.
+| Harness | Repository |
+|---|---|
+| Pi | [`agent-intercom-pi`](https://github.com/dataforxyz/agent-intercom-pi) |
+| Codex | [`agent-intercom-codex`](https://github.com/dataforxyz/agent-intercom-codex) |
+| Claude Code | [`agent-intercom-claude`](https://github.com/dataforxyz/agent-intercom-claude) |
+| OpenCode | [`agent-intercom-opencode`](https://github.com/dataforxyz/agent-intercom-opencode) |
+
+This repository contains the OpenCode adapter. It gives OpenCode native intercom tools and lets OpenCode participate in the same local agent mesh as Pi, Codex, and Claude Code sessions.
 
 ## What It Does
 
@@ -17,7 +22,7 @@ same local multi-agent mesh as Pi, Codex, and Claude sessions.
 
 ## Status
 
-Protocol-v3 compatible with Pi Intercom 0.7 and the matching Codex/Claude adapters.
+Protocol-v3 compatible with the matching Pi, Codex, and Claude Code adapters.
 
 Proven working:
 
@@ -34,9 +39,11 @@ Proven working:
 - incompatible older brokers are detected and replaced safely
 - ask defer/cancel controls are broker-acknowledged, and timed-out asks remain late-replyable
 
-## Install From This Checkout
+## Install From GitHub
 
 ```bash
+git clone https://github.com/dataforxyz/agent-intercom-opencode.git
+cd agent-intercom-opencode
 npm install
 npm run build
 ```
