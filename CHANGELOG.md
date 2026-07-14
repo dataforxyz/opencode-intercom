@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Change the current project license to `AGPL-3.0-or-later`. Previously published MIT versions remain under MIT, and original `pi-intercom` notices are preserved in `THIRD_PARTY_NOTICES.md`.
 - Persist inbound messages before broker acknowledgement and replay unfinished injection after restart.
 - Retain unresolved asks durably until a successful reply and keep a bounded delivered-ID ledger.
 - Add OpenCode message metadata/markers plus session-history checks for crash-safe duplicate suppression.
