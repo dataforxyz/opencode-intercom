@@ -173,7 +173,7 @@ export const OpenCodeIntercomPlugin: Plugin = async ({ client, directory }) => {
         const prompt = formatInboundPrompt(entry);
         let result;
         try {
-          result = await client.session.prompt({
+          result = await client.session.promptAsync({
             path: { id: sessionID },
             query: { directory },
             body: {
@@ -181,7 +181,7 @@ export const OpenCodeIntercomPlugin: Plugin = async ({ client, directory }) => {
             },
           });
         } catch (error) {
-          logInject("queue.flush.prompt.throw", {
+          logInject("queue.flush.promptAsync.throw", {
             trigger,
             sessionID,
             messageID: entry.message.id,
@@ -190,15 +190,15 @@ export const OpenCodeIntercomPlugin: Plugin = async ({ client, directory }) => {
           break;
         }
 
-        await logResult("queue.flush.prompt", result, {
+        await logResult("queue.flush.promptAsync", result, {
           trigger,
           sessionID,
           messageID: entry.message.id,
         });
-        if (result.error !== undefined) {
+        if (result.error !== undefined || !result.response?.ok) {
           break;
         }
-        markDelivered(entry.message.id, "queue.flush.prompt");
+        markDelivered(entry.message.id, "queue.flush.promptAsync");
       }
     } finally {
       logInject("queue.flush.end", { trigger, remaining: pendingInjectQueue.length });
@@ -287,50 +287,27 @@ export const OpenCodeIntercomPlugin: Plugin = async ({ client, directory }) => {
       busy,
     });
 
-    if (busy) {
-      try {
-        const asyncResult = await client.session.promptAsync({
-          path: { id: sessionID },
-          query: { directory },
-          body: {
-            parts: [{ type: "text", text: prompt }],
-          },
-        });
-        await logResult("inject.promptAsync", asyncResult, { messageID: entry.message.id, sessionID });
-        if (asyncResult.error === undefined && asyncResult.response?.ok) {
-          markDelivered(entry.message.id, "session.promptAsync");
-        }
-      } catch (error) {
-        logInject("inject.promptAsync.throw", {
-          messageID: entry.message.id,
-          sessionID,
-          error: formatError(error),
-        });
-      }
-      return;
-    }
-
     try {
-      const promptResult = await client.session.prompt({
+      const asyncResult = await client.session.promptAsync({
         path: { id: sessionID },
         query: { directory },
         body: {
           parts: [{ type: "text", text: prompt }],
         },
       });
-      await logResult("inject.prompt", promptResult, { messageID: entry.message.id, sessionID });
-      if (promptResult.error !== undefined) {
-        enqueuePendingInject(entry, "prompt_error");
-      } else if (promptResult.response?.ok) {
-        markDelivered(entry.message.id, "session.prompt");
+      await logResult("inject.promptAsync", asyncResult, { messageID: entry.message.id, sessionID, busy });
+      if (asyncResult.error === undefined && asyncResult.response?.ok) {
+        markDelivered(entry.message.id, "session.promptAsync");
+      } else {
+        enqueuePendingInject(entry, "prompt_async_error");
       }
     } catch (error) {
-      logInject("inject.prompt.throw", {
+      logInject("inject.promptAsync.throw", {
         messageID: entry.message.id,
         sessionID,
         error: formatError(error),
       });
-      enqueuePendingInject(entry, "prompt_throw");
+      enqueuePendingInject(entry, "prompt_async_throw");
     }
   }
 

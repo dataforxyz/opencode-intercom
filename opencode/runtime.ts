@@ -198,9 +198,11 @@ export class OpenCodeIntercomRuntime {
     if (message.expectsReply) {
       this.unresolvedAsks.set(message.id, entry);
     }
-    void Promise.resolve(this.onInboundMessage?.(entry)).then(() => {
-      this.client?.acknowledgeMessage(deliveryId);
-    }).catch((error) => {
+    // A headless server may take many seconds to run the model turn. Acknowledge
+    // once the message is queued in this runtime so the broker does not evict the
+    // otherwise healthy receiver while OpenCode is still processing it.
+    this.client?.acknowledgeMessage(deliveryId);
+    void Promise.resolve(this.onInboundMessage?.(entry)).catch((error) => {
       console.error("Failed to inject inbound intercom message:", error);
     });
   }

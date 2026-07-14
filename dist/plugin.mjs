@@ -1430,9 +1430,8 @@ var OpenCodeIntercomRuntime = class {
     if (message.expectsReply) {
       this.unresolvedAsks.set(message.id, entry);
     }
-    void Promise.resolve(this.onInboundMessage?.(entry)).then(() => {
-      this.client?.acknowledgeMessage(deliveryId);
-    }).catch((error) => {
+    this.client?.acknowledgeMessage(deliveryId);
+    void Promise.resolve(this.onInboundMessage?.(entry)).catch((error) => {
       console.error("Failed to inject inbound intercom message:", error);
     });
   }
@@ -1801,7 +1800,7 @@ This message expects a reply. Use intercom_reply with reply_to "${entry.message.
         const prompt = formatInboundPrompt(entry);
         let result;
         try {
-          result = await client.session.prompt({
+          result = await client.session.promptAsync({
             path: { id: sessionID },
             query: { directory },
             body: {
@@ -1809,7 +1808,7 @@ This message expects a reply. Use intercom_reply with reply_to "${entry.message.
             }
           });
         } catch (error) {
-          logInject("queue.flush.prompt.throw", {
+          logInject("queue.flush.promptAsync.throw", {
             trigger,
             sessionID,
             messageID: entry.message.id,
@@ -1817,15 +1816,15 @@ This message expects a reply. Use intercom_reply with reply_to "${entry.message.
           });
           break;
         }
-        await logResult("queue.flush.prompt", result, {
+        await logResult("queue.flush.promptAsync", result, {
           trigger,
           sessionID,
           messageID: entry.message.id
         });
-        if (result.error !== void 0) {
+        if (result.error !== void 0 || !result.response?.ok) {
           break;
         }
-        markDelivered(entry.message.id, "queue.flush.prompt");
+        markDelivered(entry.message.id, "queue.flush.promptAsync");
       }
     } finally {
       logInject("queue.flush.end", { trigger, remaining: pendingInjectQueue.length });
@@ -1904,49 +1903,27 @@ This message expects a reply. Use intercom_reply with reply_to "${entry.message.
       activeSessionStatus,
       busy
     });
-    if (busy) {
-      try {
-        const asyncResult = await client.session.promptAsync({
-          path: { id: sessionID },
-          query: { directory },
-          body: {
-            parts: [{ type: "text", text: prompt }]
-          }
-        });
-        await logResult("inject.promptAsync", asyncResult, { messageID: entry.message.id, sessionID });
-        if (asyncResult.error === void 0 && asyncResult.response?.ok) {
-          markDelivered(entry.message.id, "session.promptAsync");
-        }
-      } catch (error) {
-        logInject("inject.promptAsync.throw", {
-          messageID: entry.message.id,
-          sessionID,
-          error: formatError(error)
-        });
-      }
-      return;
-    }
     try {
-      const promptResult = await client.session.prompt({
+      const asyncResult = await client.session.promptAsync({
         path: { id: sessionID },
         query: { directory },
         body: {
           parts: [{ type: "text", text: prompt }]
         }
       });
-      await logResult("inject.prompt", promptResult, { messageID: entry.message.id, sessionID });
-      if (promptResult.error !== void 0) {
-        enqueuePendingInject(entry, "prompt_error");
-      } else if (promptResult.response?.ok) {
-        markDelivered(entry.message.id, "session.prompt");
+      await logResult("inject.promptAsync", asyncResult, { messageID: entry.message.id, sessionID, busy });
+      if (asyncResult.error === void 0 && asyncResult.response?.ok) {
+        markDelivered(entry.message.id, "session.promptAsync");
+      } else {
+        enqueuePendingInject(entry, "prompt_async_error");
       }
     } catch (error) {
-      logInject("inject.prompt.throw", {
+      logInject("inject.promptAsync.throw", {
         messageID: entry.message.id,
         sessionID,
         error: formatError(error)
       });
-      enqueuePendingInject(entry, "prompt_throw");
+      enqueuePendingInject(entry, "prompt_async_throw");
     }
   }
   const runtime = new OpenCodeIntercomRuntime(void 0, directory, injectInbound);

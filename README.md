@@ -38,7 +38,7 @@ Proven working:
   finishes
 - verified exactly-once inbound delivery in headless run mode
 
-- delivery is complete only after OpenCode confirms prompt injection
+- headless server receivers acknowledge once the runtime queues the message, then inject it asynchronously so long model turns do not make the broker evict a healthy peer
 - sends survive reconnects in a durable sender outbox and replay with the same ID
 - incompatible older brokers are detected and replaced safely
 - ask defer/cancel controls are broker-acknowledged, and timed-out asks remain late-replyable
@@ -121,16 +121,19 @@ deliver them into the active OpenCode session.
 
 Current delivery strategy:
 
-1. show a toast
-2. if OpenCode is running with a real TUI, try prompt append + submit
-3. if the target session is busy in headless/run mode, use `session.promptAsync`
-4. if the busy-path delivery is not confirmed, keep a fallback queue
-5. flush queued fallback messages on `session.idle`
-6. acknowledge delivery to the broker only after injection succeeds
+1. queue the inbound message in the OpenCode runtime and acknowledge it to the broker immediately
+2. show a toast
+3. if OpenCode is running with a real TUI, try prompt append + submit
+4. in headless run/server mode, use `session.promptAsync` so broker delivery does not wait for the model turn
+5. if prompt submission is not confirmed, keep a fallback queue
+6. flush queued fallback messages with `promptAsync` on `session.idle`
 7. track delivered message IDs so a message is never injected twice
 
-Protocol delivery has two states: `accepted` means the broker has assigned a
-delivery ID; `delivered` means this receiver acknowledged successful injection.
+Protocol delivery has two states: `accepted` means the broker assigned a
+delivery ID; `delivered` means this receiver queued the message in its runtime.
+Model completion and an ask reply are separate later events. This distinction is
+necessary for persistent headless servers because a model turn can outlive the
+broker's receiver-ack deadline.
 The sender outbox is stored below the shared intercom runtime directory and is
 replayed automatically after reconnect.
 

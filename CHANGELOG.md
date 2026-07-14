@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Queue and acknowledge inbound messages before long headless model turns, using `session.promptAsync` for both idle and busy server sessions.
+- Support persistent `opencode serve` peers without broker delivery timeouts disconnecting otherwise healthy receivers.
+
 ## 0.2.0
 
 - Upgrade the shared broker/client transport to strict intercom protocol v3.
