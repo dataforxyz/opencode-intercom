@@ -47,12 +47,20 @@
     "@opencode-ai/plugin": "^1.17.15"
   },
   "devDependencies": {
+    "@types/node": "^24.0.0",
     "esbuild": "^0.28.1",
     "tsx": "^4.20.0",
-    "typescript": "^6.0.3",
-    "@types/node": "^24.0.0"
+    "typescript": "^6.0.3"
   },
   "publishConfig": {
     "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dataforxyz/agent-intercom-opencode.git"
+  },
+  "homepage": "https://github.com/dataforxyz/agent-intercom-opencode#readme",
+  "bugs": {
+    "url": "https://github.com/dataforxyz/agent-intercom-opencode/issues"
   }
 }
