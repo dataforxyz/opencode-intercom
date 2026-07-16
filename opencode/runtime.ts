@@ -7,6 +7,7 @@ import { spawnBrokerIfNeeded } from "../broker/spawn.ts";
 import { getAskTimeoutMs, loadConfig } from "../config.ts";
 import { DurableInboundStore, getOpenCodeInboundStatePath, type DurableInboundEntry, type InboundDeliveryStore } from "./inbound-store.ts";
 import type { Attachment, Message, SessionInfo } from "../types.ts";
+import { formatIntercomTeam, resolveIntercomTeam } from "./team.ts";
 
 export interface OpenCodeRuntimeIdentity {
   sessionId: string;
@@ -266,6 +267,13 @@ export class OpenCodeIntercomRuntime {
       `session_id: ${sessionId}\nname: ${this.identity.name}\ncwd: ${this.identity.cwd}`,
       { session_id: sessionId, name: this.identity.name, cwd: this.identity.cwd, model: this.identity.model },
     );
+  }
+
+  async team(): Promise<ToolResult> {
+    const client = await this.connect();
+    const sessions = await client.listSessions();
+    const team = await resolveIntercomTeam({ selfId: client.sessionId ?? this.identity.sessionId, sessions });
+    return textResult(formatIntercomTeam(team), team as unknown as Record<string, unknown>);
   }
 
   async status(): Promise<ToolResult> {

@@ -160,14 +160,15 @@ uses `wl-copy`, `xclip`, or `xsel`; macOS uses `pbcopy`, and Windows uses
 ## Tools
 
 - `intercom_whoami`: show this session's intercom ID, name, cwd, and model
+- `intercom_team`: show the current manager and live coworkers owned by that manager
 - `intercom_status`: show connection status and pending message counts
-- `intercom_list`: list local Pi, Codex, Claude, and OpenCode sessions
+- `intercom_list`: list local Pi, Codex, Claude, and OpenCode sessions globally
 - `intercom_set_summary`: publish a short discoverable status
 - `intercom_send`: send a non-blocking message
 - `intercom_ask`: send a question and wait briefly for the target's reply
 - `intercom_pending`: read queued inbound messages and unresolved asks
 - `intercom_reply`: reply to a pending inbound ask
-- `agent_fleet` *(opt-in manager only)*: create, inspect, adopt, renew, stop, and clean up owned Pi, Codex, Claude, and OpenCode coworkers using the same store and systemd lifecycle implementation as Pi
+- `agent_fleet` *(opt-in manager only)*: create, inspect, adopt, renew, stop, and clean up owned coworkers; inspect coordinated adapter versions and preview or execute source-aware updates using the same implementation as Pi
 
 ## Inbound Delivery Model
 

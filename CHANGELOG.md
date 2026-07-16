@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add `intercom_team` for adoption-safe manager and same-manager coworker discovery.
+- Expose orchestrator `versions` and source-aware `update` actions through the native OpenCode fleet bridge.
+
 ## 0.9.3 - 2026-07-15
 
 - Expose the orchestrator's manager-scoped fleet listing and explicit `all` diagnostics option through the native OpenCode `agent_fleet` bridge.

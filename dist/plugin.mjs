@@ -1362,6 +1362,52 @@ var DurableInboundStore = class {
   }
 };
 
+// opencode/team.ts
+import { readFile } from "node:fs/promises";
+import { join as join6 } from "node:path";
+var LIVE_STATES = /* @__PURE__ */ new Set(["provisioning", "running", "idle", "needs_attention", "stopping"]);
+var stringValue = (value) => typeof value === "string" && value.trim() ? value.trim() : void 0;
+var connectedTo = (sessions, target) => {
+  const normalized = target.toLowerCase();
+  return sessions.some((session) => session.id === target || session.name?.toLowerCase() === normalized);
+};
+async function readWorkers(agentDir) {
+  try {
+    const parsed = JSON.parse(await readFile(join6(agentDir, "intercom", "orchestrator", "workers.json"), "utf8"));
+    return Array.isArray(parsed.workers) ? parsed.workers : [];
+  } catch {
+    return [];
+  }
+}
+async function resolveIntercomTeam(input) {
+  const env = input.env ?? process.env;
+  const workers = await readWorkers(input.agentDir ?? getAgentDirPath());
+  const workerId = stringValue(env.AGENT_INTERCOM_WORKER_ID);
+  const runId = stringValue(env.AGENT_INTERCOM_RUN_ID);
+  const current = workerId ? workers.find((worker) => stringValue(worker.id) === workerId && (!runId || stringValue(worker.runId) === runId)) : void 0;
+  const managerTarget = stringValue(current?.managerSessionId) ?? stringValue(env.AGENT_INTERCOM_MANAGER_TARGET) ?? stringValue(env.AGENT_INTERCOM_MANAGER_SESSION_ID);
+  const teamId = managerTarget ?? input.selfId;
+  const coworkers = workers.filter((worker) => worker.owned === true).filter((worker) => stringValue(worker.managerSessionId) === teamId).filter((worker) => LIVE_STATES.has(stringValue(worker.state) ?? "")).filter((worker) => stringValue(worker.id) !== workerId).map((worker) => {
+    const id = stringValue(worker.id);
+    if (!id) return void 0;
+    const target = stringValue(worker.intercomTarget) ?? id;
+    return { id, target, ...stringValue(worker.harness) ? { harness: stringValue(worker.harness) } : {}, ...stringValue(worker.role) ? { role: stringValue(worker.role) } : {}, ...stringValue(worker.state) ? { state: stringValue(worker.state) } : {}, connected: connectedTo(input.sessions, target) };
+  }).filter((member) => Boolean(member));
+  return { teamId, self: { id: input.selfId, ...workerId ? { workerId } : {}, isManager: !managerTarget }, manager: managerTarget ? { target: managerTarget, connected: connectedTo(input.sessions, managerTarget) } : { target: input.selfId, connected: true }, coworkers };
+}
+function formatIntercomTeam(team) {
+  const lines = [`Manager: ${team.manager ? `${team.manager.target} [${team.manager.connected ? "connected" : "not connected"}]` : "unknown"}`, `You: ${team.self.id}${team.self.isManager ? " [manager]" : ""}`];
+  if (!team.coworkers.length) lines.push("Coworkers: none");
+  else {
+    lines.push("Coworkers:");
+    for (const coworker of team.coworkers) {
+      const metadata = [coworker.harness, coworker.role, coworker.state].filter(Boolean).join(", ");
+      lines.push(`- ${coworker.id} target=${coworker.target}${metadata ? ` (${metadata})` : ""} [${coworker.connected ? "connected" : "not connected"}]`);
+    }
+  }
+  return lines.join("\n");
+}
+
 // opencode/runtime.ts
 function shortHash(value) {
   return createHash2("sha256").update(value).digest("hex").slice(0, 8);
@@ -1580,6 +1626,12 @@ name: ${this.identity.name}
 cwd: ${this.identity.cwd}`,
       { session_id: sessionId, name: this.identity.name, cwd: this.identity.cwd, model: this.identity.model }
     );
+  }
+  async team() {
+    const client = await this.connect();
+    const sessions = await client.listSessions();
+    const team = await resolveIntercomTeam({ selfId: client.sessionId ?? this.identity.sessionId, sessions });
+    return textResult(formatIntercomTeam(team), team);
   }
   async status() {
     const client = await this.connect();
@@ -1814,10 +1866,10 @@ async function invokeAgentFleet(params, context, env = process.env) {
 // opencode/control.ts
 import { randomUUID as randomUUID5 } from "node:crypto";
 import { mkdirSync as mkdirSync4, readFileSync as readFileSync6, readdirSync, renameSync as renameSync3, rmSync, writeFileSync as writeFileSync3 } from "node:fs";
-import { join as join6 } from "node:path";
+import { join as join7 } from "node:path";
 var CONTROL_DIR_NAME = "opencode-control";
 function controlDir() {
-  const directory = join6(getIntercomDirPath(), CONTROL_DIR_NAME);
+  const directory = join7(getIntercomDirPath(), CONTROL_DIR_NAME);
   mkdirSync4(directory, { recursive: true, mode: 448 });
   return directory;
 }
@@ -1843,7 +1895,7 @@ function startOpenCodeControlServer(options) {
     try {
       const files = readdirSync(directory).filter((file) => file.endsWith(".request.json"));
       for (const file of files) {
-        const requestPath = join6(directory, file);
+        const requestPath = join7(directory, file);
         let request;
         try {
           request = JSON.parse(readFileSync6(requestPath, "utf8"));
@@ -1851,7 +1903,7 @@ function startOpenCodeControlServer(options) {
           continue;
         }
         if (!request?.id || !request.sessionId || !options.acceptsSession(request.sessionId)) continue;
-        const responsePath = join6(directory, responseName(request.sessionId, request.id));
+        const responsePath = join7(directory, responseName(request.sessionId, request.id));
         let response;
         try {
           response = { ok: true, value: await options.handle(request.action) };
@@ -2234,7 +2286,7 @@ This message expects a reply. Use intercom_reply with reply_to "${entry.message.
         agent_fleet: tool({
           description: "Create, inspect, adopt, stop, and clean up systemd-owned Pi, Codex, Claude, and OpenCode coworkers. Spawn/list results include direct Intercom targets; list/status default to this manager's workers. Enabled only for an explicitly configured primary OpenCode manager.",
           args: {
-            action: tool.schema.string().describe("Fleet action: spawn, list, status, stop, cleanup, doctor, logs, renew, forget, adopt, capabilities, profiles, models, variants, or config."),
+            action: tool.schema.string().describe("Fleet action: spawn, list, status, stop, cleanup, doctor, versions, update, logs, renew, forget, adopt, capabilities, profiles, models, variants, or config."),
             id: tool.schema.string().optional().describe("Stable worker ID."),
             harness: tool.schema.string().optional().describe("pi, codex, claude, or opencode."),
             role: tool.schema.string().optional().describe("Worker role or configured role preset."),
@@ -2246,7 +2298,7 @@ This message expects a reply. Use intercom_reply with reply_to "${entry.message.
             instructions: tool.schema.string().optional().describe("Additional standing instructions."),
             fresh: tool.schema.boolean().optional().describe("Start a fresh persistent session rather than resume this worker ID."),
             all: tool.schema.boolean().optional().describe("Include workers owned by other manager sessions for list/status diagnostics."),
-            execute: tool.schema.boolean().optional().describe("Actually execute cleanup; false previews."),
+            execute: tool.schema.boolean().optional().describe("Actually execute cleanup or updates; false previews."),
             lines: tool.schema.number().optional().describe("Journal lines for logs.")
           },
           async execute(args, context) {
@@ -2265,6 +2317,14 @@ This message expects a reply. Use intercom_reply with reply_to "${entry.message.
         async execute(_args, context) {
           setActiveSession(context.sessionID);
           return resultText(await runtime.whoami());
+        }
+      }),
+      intercom_team: tool({
+        description: "Show your current manager and the live coworkers owned by that manager. No arguments are required.",
+        args: {},
+        async execute(_args, context) {
+          setActiveSession(context.sessionID);
+          return resultText(await runtime.team());
         }
       }),
       intercom_status: tool({

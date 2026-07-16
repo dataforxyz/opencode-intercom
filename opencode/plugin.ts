@@ -413,7 +413,7 @@ export const OpenCodeIntercomPlugin: Plugin = async ({ client, directory, server
         agent_fleet: tool({
           description: "Create, inspect, adopt, stop, and clean up systemd-owned Pi, Codex, Claude, and OpenCode coworkers. Spawn/list results include direct Intercom targets; list/status default to this manager's workers. Enabled only for an explicitly configured primary OpenCode manager.",
           args: {
-            action: tool.schema.string().describe("Fleet action: spawn, list, status, stop, cleanup, doctor, logs, renew, forget, adopt, capabilities, profiles, models, variants, or config."),
+            action: tool.schema.string().describe("Fleet action: spawn, list, status, stop, cleanup, doctor, versions, update, logs, renew, forget, adopt, capabilities, profiles, models, variants, or config."),
             id: tool.schema.string().optional().describe("Stable worker ID."),
             harness: tool.schema.string().optional().describe("pi, codex, claude, or opencode."),
             role: tool.schema.string().optional().describe("Worker role or configured role preset."),
@@ -425,7 +425,7 @@ export const OpenCodeIntercomPlugin: Plugin = async ({ client, directory, server
             instructions: tool.schema.string().optional().describe("Additional standing instructions."),
             fresh: tool.schema.boolean().optional().describe("Start a fresh persistent session rather than resume this worker ID."),
             all: tool.schema.boolean().optional().describe("Include workers owned by other manager sessions for list/status diagnostics."),
-            execute: tool.schema.boolean().optional().describe("Actually execute cleanup; false previews."),
+            execute: tool.schema.boolean().optional().describe("Actually execute cleanup or updates; false previews."),
             lines: tool.schema.number().optional().describe("Journal lines for logs."),
           },
           async execute(args, context) {
@@ -444,6 +444,15 @@ export const OpenCodeIntercomPlugin: Plugin = async ({ client, directory, server
         async execute(_args, context) {
           setActiveSession(context.sessionID);
           return resultText(await runtime.whoami());
+        },
+      }),
+
+      intercom_team: tool({
+        description: "Show your current manager and the live coworkers owned by that manager. No arguments are required.",
+        args: {},
+        async execute(_args, context) {
+          setActiveSession(context.sessionID);
+          return resultText(await runtime.team());
         },
       }),
 
