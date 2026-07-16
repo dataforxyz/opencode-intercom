@@ -367,6 +367,13 @@ export const OpenCodeIntercomPlugin: Plugin = async ({ client, directory, server
     serverUrl: serverUrl.toString(),
     directory,
   });
+  runtime.setConnectionStateHandler((connected, error) => {
+    healthReporter.update({
+      connected,
+      status: connected ? activeSessionStatus : "reconnecting",
+      error: error?.message,
+    });
+  });
   void (async () => {
     try {
       await runtime.connect();
@@ -501,7 +508,7 @@ export const OpenCodeIntercomPlugin: Plugin = async ({ client, directory, server
       }),
 
       intercom_ask: tool({
-        description: "Ask another local intercom session a blocking question and wait briefly for a reply.",
+        description: "Ask another local intercom session a question only when the next step depends on its reply. Use intercom_send for assignments, progress/status checkpoints, and notifications.",
         args: {
           to: tool.schema.string().describe("Target session name, id, or unique id prefix."),
           message: tool.schema.string().describe("Question text to send."),
