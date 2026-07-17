@@ -1232,6 +1232,7 @@ var IntercomBroker = class {
           this.sendDeliveryFailure(socket, messageId, false, "INVALID_MESSAGE", "Invalid message format");
           break;
         }
+        const action = message.replyTo ? "reply" : message.expectsReply ? "ask" : "send";
         this.pruneRecentDeliveries();
         const deliveryKey = this.deliveryKey(currentId, message.id);
         const fingerprint = JSON.stringify({
@@ -1246,7 +1247,12 @@ var IntercomBroker = class {
             this.sendDeliveryFailure(socket, message.id, false, "DUPLICATE_MESSAGE_ID", "Message ID was already used with a different payload");
             break;
           }
-          if (recent.retryable) {
+          const actor = this.sessions.get(currentId);
+          const target = this.sessions.get(recent.to);
+          const authorizationStillValid = Boolean(
+            actor && target && (actor.info.generation ?? 1) === recent.fromGeneration && (target.info.generation ?? 1) === recent.toGeneration && this.isAuthorized(currentId, recent.action, recent.to)
+          );
+          if (recent.retryable || !authorizationStillValid) {
             this.recentDeliveries.delete(deliveryKey);
           } else {
             if (recent.response.type === "delivered") {
@@ -1265,16 +1271,20 @@ var IntercomBroker = class {
           const existing = this.pendingDeliveries.get(existingDeliveryId);
           if (!existing || existing.fingerprint !== fingerprint) {
             this.sendDeliveryFailure(socket, message.id, false, "DUPLICATE_MESSAGE_ID", "Message ID is already pending with a different payload");
-          } else {
-            writeMessage(socket, { type: "delivery_accepted", messageId: message.id, deliveryId: existing.id });
+            break;
           }
-          break;
+          const actor = this.sessions.get(existing.from);
+          const target = this.sessions.get(existing.to);
+          if (actor && target && (actor.info.generation ?? 1) === existing.fromGeneration && (target.info.generation ?? 1) === existing.toGeneration && this.isAuthorized(existing.from, existing.action, existing.to)) {
+            writeMessage(socket, { type: "delivery_accepted", messageId: message.id, deliveryId: existing.id });
+            break;
+          }
+          this.failPendingDelivery(existing.id, "SESSION_NOT_FOUND", "Delivery authorization changed while pending");
         }
         if (this.pendingDeliveries.size >= MAX_PENDING_DELIVERIES || this.countPendingDeliveriesFrom(currentId) >= MAX_PENDING_DELIVERIES_PER_SESSION) {
           this.sendDeliveryFailure(socket, message.id, false, "TOO_MANY_PENDING_DELIVERIES", "Too many messages are waiting for receiver acknowledgement");
           break;
         }
-        const action = message.replyTo ? "reply" : message.expectsReply ? "ask" : "send";
         const candidates = this.findSessions(clientMessage.to);
         const targets = candidates.filter((target) => this.isAuthorized(currentId, action, target.info.id));
         if (candidates.length > 0 && targets.length === 0) {
@@ -1475,8 +1485,31 @@ var IntercomBroker = class {
     };
   }
   handleAccessControl(socket, message) {
-    if (typeof message.requestId !== "string" || message.requestId.length > MAX_MESSAGE_ID_LENGTH || typeof message.adminToken !== "string" || !this.accessRegistry.authenticateAdmin(message.adminToken) || message.action !== "issue_enrollment" || typeof message.enrollment !== "object" || message.enrollment === null || Array.isArray(message.enrollment)) {
+    if (typeof message.requestId !== "string" || message.requestId.length > MAX_MESSAGE_ID_LENGTH || typeof message.adminToken !== "string" || !this.accessRegistry.authenticateAdmin(message.adminToken)) {
       this.sendError(socket, "ACCESS_DENIED", "Remote access control credential or request was rejected");
+      socket.end();
+      return;
+    }
+    if (message.action === "revoke_subtree") {
+      if (typeof message.principalId !== "string" || !isSessionId(message.principalId)) {
+        this.sendError(socket, "INVALID_REQUEST", "Invalid remote principal ID");
+        socket.end();
+        return;
+      }
+      const priorSessions = Array.from(this.sessions.values(), (session) => session.info);
+      const changed = this.accessRegistry.revoke(message.principalId);
+      this.disconnectRevokedPrincipals(changed, priorSessions);
+      writeMessage(socket, {
+        type: "access_control_result",
+        requestId: message.requestId,
+        action: "revoke_subtree",
+        changedPrincipalIds: changed.map((principal) => principal.id)
+      });
+      socket.end();
+      return;
+    }
+    if (message.action !== "issue_enrollment" || typeof message.enrollment !== "object" || message.enrollment === null || Array.isArray(message.enrollment)) {
+      this.sendError(socket, "INVALID_REQUEST", "Unknown remote access control action");
       socket.end();
       return;
     }
@@ -1515,6 +1548,46 @@ var IntercomBroker = class {
       expiresAt: issued.expiresAt
     });
     socket.end();
+  }
+  disconnectRevokedPrincipals(changed, priorSessions) {
+    const changedIds = new Set(changed.map((principal) => principal.id));
+    for (const principal of changed) {
+      const live = this.sessions.get(principal.id);
+      if (!live) {
+        this.audit.record({
+          event: "principal_revoked",
+          outcome: "allowed",
+          actorId: principal.id,
+          remoteHostId: principal.remoteHostId,
+          generation: principal.generation,
+          reason: "OFFLINE"
+        });
+        continue;
+      }
+      const subject = priorSessions.find((session) => session.id === principal.id) ?? live.info;
+      for (const [recipientId, recipient] of this.sessions) {
+        if (recipientId !== principal.id && !changedIds.has(recipientId) && authorizeSessionAction(priorSessions, recipientId, "discover", principal.id).allowed) {
+          writeMessage(recipient.socket, { type: "session_left", sessionId: principal.id });
+        }
+      }
+      this.clearPendingDeliveriesForSession(principal.id, live.socket);
+      this.clearAskEdgesForSession(principal.id, "authorization_revoked");
+      this.sessions.delete(principal.id);
+      for (const [key, recent] of this.recentDeliveries) {
+        if (recent.from === principal.id || recent.to === principal.id) this.recentDeliveries.delete(key);
+      }
+      this.audit.record({
+        event: "principal_revoked",
+        outcome: "allowed",
+        actorId: principal.id,
+        targetId: subject.parentSessionId,
+        remoteHostId: principal.remoteHostId,
+        generation: principal.generation,
+        reason: "DISCONNECTED"
+      });
+      live.socket.destroy();
+    }
+    if (changed.length > 0) this.scheduleShutdownCheck();
   }
   isCurrentPrincipal(sessionId) {
     const session = this.sessions.get(sessionId);
@@ -1746,6 +1819,11 @@ var IntercomBroker = class {
     const response = { type: "delivered", messageId: pending.message.id, deliveryId };
     this.recentDeliveries.set(pending.key, {
       fingerprint: pending.fingerprint,
+      from: pending.from,
+      to: pending.to,
+      action: pending.action,
+      fromGeneration: pending.fromGeneration,
+      toGeneration: pending.toGeneration,
       retryable: false,
       response,
       expiresAt: Date.now() + RECENT_DELIVERY_TTL_MS
@@ -1774,6 +1852,11 @@ var IntercomBroker = class {
     };
     this.recentDeliveries.set(pending.key, {
       fingerprint: pending.fingerprint,
+      from: pending.from,
+      to: pending.to,
+      action: pending.action,
+      fromGeneration: pending.fromGeneration,
+      toGeneration: pending.toGeneration,
       retryable: true,
       response,
       expiresAt: Date.now() + RECENT_DELIVERY_TTL_MS
