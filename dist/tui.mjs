@@ -1,6 +1,135 @@
 // opencode/contact.ts
 import { spawnSync } from "node:child_process";
 
+// node_modules/@dataforxyz/agent-intercom-core/src/policy-vectors.ts
+var localRoot = {
+  id: "local-root",
+  kind: "local",
+  state: "active",
+  generation: 1,
+  policy: "local-public",
+  rootSessionId: "local-root"
+};
+var localPeer = {
+  id: "local-peer",
+  kind: "local",
+  state: "active",
+  generation: 1,
+  policy: "local-public",
+  rootSessionId: "local-peer"
+};
+var remoteManager = {
+  id: "remote-manager",
+  kind: "remote",
+  state: "active",
+  generation: 1,
+  policy: "remote-parent",
+  parentSessionId: "local-root",
+  rootSessionId: "local-root"
+};
+var remoteChild = {
+  id: "remote-child",
+  kind: "remote",
+  state: "active",
+  generation: 1,
+  policy: "remote-parent",
+  parentSessionId: "remote-manager",
+  rootSessionId: "local-root"
+};
+var remoteSibling = {
+  id: "remote-sibling",
+  kind: "remote",
+  state: "active",
+  generation: 1,
+  policy: "remote-parent",
+  parentSessionId: "remote-manager",
+  rootSessionId: "local-root"
+};
+var POLICY_VECTORS = [
+  {
+    name: "local sessions remain public",
+    principals: [localRoot, localPeer],
+    actorId: "local-root",
+    action: "send",
+    targetId: "local-peer",
+    expectedAllowed: true,
+    expectedReasonOrCode: "local-public"
+  },
+  {
+    name: "remote manager can reach direct local parent",
+    principals: [localRoot, remoteManager],
+    actorId: "remote-manager",
+    action: "send",
+    targetId: "local-root",
+    expectedAllowed: true,
+    expectedReasonOrCode: "direct-parent"
+  },
+  {
+    name: "local parent can reach direct remote child",
+    principals: [localRoot, remoteManager],
+    actorId: "local-root",
+    action: "ask",
+    targetId: "remote-manager",
+    expectedAllowed: true,
+    expectedReasonOrCode: "direct-parent"
+  },
+  {
+    name: "remote child cannot skip its direct parent in phase zero",
+    principals: [localRoot, remoteManager, remoteChild],
+    actorId: "remote-child",
+    action: "send",
+    targetId: "local-root",
+    expectedAllowed: false,
+    expectedReasonOrCode: "POLICY_DENIED"
+  },
+  {
+    name: "remote siblings cannot communicate in phase zero",
+    principals: [localRoot, remoteManager, remoteChild, remoteSibling],
+    actorId: "remote-child",
+    action: "discover",
+    targetId: "remote-sibling",
+    expectedAllowed: false,
+    expectedReasonOrCode: "POLICY_DENIED"
+  },
+  {
+    name: "unrelated local session cannot discover remote principal",
+    principals: [localRoot, localPeer, remoteManager],
+    actorId: "local-peer",
+    action: "discover",
+    targetId: "remote-manager",
+    expectedAllowed: false,
+    expectedReasonOrCode: "POLICY_DENIED"
+  },
+  {
+    name: "remote principal cannot reach unrelated local session",
+    principals: [localRoot, localPeer, remoteManager],
+    actorId: "remote-manager",
+    action: "send",
+    targetId: "local-peer",
+    expectedAllowed: false,
+    expectedReasonOrCode: "POLICY_DENIED"
+  },
+  {
+    name: "revoked principal cannot communicate",
+    principals: [localRoot, { ...remoteManager, state: "revoked" }],
+    actorId: "remote-manager",
+    action: "send",
+    targetId: "local-root",
+    expectedAllowed: false,
+    expectedReasonOrCode: "REVOKED_PRINCIPAL"
+  },
+  {
+    name: "stale actor generation cannot send",
+    principals: [localRoot, { ...remoteManager, generation: 2 }],
+    actorId: "remote-manager",
+    action: "send",
+    targetId: "local-root",
+    context: { actorGeneration: 1 },
+    expectedAllowed: false,
+    expectedReasonOrCode: "STALE_GENERATION"
+  }
+];
+
 // broker/framing.ts
 var MAX_FRAME_BYTES = 1024 * 1024;
 
