@@ -181,6 +181,7 @@ export interface OpenCodeIntercomRuntimeOptions {
   clientFactory?: () => IntercomClient;
   prepareConnection?: () => Promise<void>;
   reconnectDelays?: number[];
+  onInboundActivity?: (from: SessionInfo, message: Message) => void | Promise<void>;
 }
 
 export class OpenCodeIntercomRuntime {
@@ -199,6 +200,7 @@ export class OpenCodeIntercomRuntime {
   private readonly clientFactory: () => IntercomClient;
   private readonly prepareConnection: () => Promise<void>;
   private readonly reconnectDelays: number[];
+  private readonly onInboundActivity?: (from: SessionInfo, message: Message) => void | Promise<void>;
 
   constructor(identity?: OpenCodeRuntimeIdentity, cwd?: string, onInboundMessage?: InboundMessageHandler, inboundStore?: InboundDeliveryStore, options: OpenCodeIntercomRuntimeOptions = {}) {
     this.identity = identity ?? buildOpenCodeRuntimeIdentity(process.env, cwd);
@@ -210,6 +212,7 @@ export class OpenCodeIntercomRuntime {
       await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs);
     });
     this.reconnectDelays = options.reconnectDelays?.length ? options.reconnectDelays : [250, 500, 1000, 2000, 5000];
+    this.onInboundActivity = options.onInboundActivity;
     this.inboundStore = inboundStore ?? new DurableInboundStore(
       process.env.OPENCODE_INTERCOM_INBOUND_STATE?.trim() || getOpenCodeInboundStatePath(this.identity.sessionId),
     );
@@ -321,6 +324,7 @@ export class OpenCodeIntercomRuntime {
       const senderTarget = from.name || from.id;
       const fromMatches = senderTarget.toLowerCase() === waiter.from.toLowerCase() || from.id === waiter.from;
       if (fromMatches) {
+        void Promise.resolve(this.onInboundActivity?.(from, message)).catch(() => undefined);
         this.replyWaiters.delete(waiter.replyTo);
         clearTimeout(waiter.timeout);
         waiter.cleanup?.();
@@ -336,6 +340,7 @@ export class OpenCodeIntercomRuntime {
       this.client?.acknowledgeMessage(deliveryId);
       return;
     }
+    void Promise.resolve(this.onInboundActivity?.(from, message)).catch(() => undefined);
     this.unread.push(entry);
     if (message.expectsReply) {
       this.unresolvedAsks.set(message.id, entry);

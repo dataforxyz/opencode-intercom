@@ -98,11 +98,13 @@ test("inbound delivery is durably queued and acknowledged before model injection
     let finishInjection!: () => void;
     const injection = new Promise<void>((resolve) => { finishInjection = resolve; });
     const store = new DurableInboundStore(join(dir, "inbound.json"));
+    const activity: string[] = [];
     const runtime = new OpenCodeIntercomRuntime(
       { sessionId: "receiver", name: "receiver", cwd: "/repo", model: "test", startedAt: 1 },
       "/repo",
       async () => injection,
       store,
+      { onInboundActivity: (from) => { activity.push(from.id); } },
     );
     const acknowledgements: string[] = [];
     (runtime as any).client = {
@@ -118,8 +120,17 @@ test("inbound delivery is durably queued and acknowledged before model injection
       "delivery-1",
     );
 
+    await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(acknowledgements, ["delivery-1"]);
+    assert.deepEqual(activity, ["sender"]);
     assert.deepEqual(new DurableInboundStore(store.path).pendingInjection().map((entry) => entry.message.id), ["message-1"]);
+    (runtime as any).handleIncomingMessage(
+      { id: "sender", name: "sender", cwd: "/repo", model: "test", pid: 1, startedAt: 1, lastActivity: 1 },
+      { id: "message-1", content: { text: "hello" }, timestamp: 1 },
+      "delivery-retry",
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(activity, ["sender"], "durable duplicate replay must not renew activity twice");
     finishInjection();
     await injection;
   } finally {

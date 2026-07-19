@@ -172,7 +172,7 @@ uses `wl-copy`, `xclip`, or `xsel`; macOS uses `pbcopy`, and Windows uses
 Pending output never exposes protocol message IDs. Keep at most one unresolved `intercom_ask` to the same recipient; the broker rejects a second ask and recommends `intercom_send` for a non-blocking follow-up. Use `intercom_send`—not `intercom_ask`—for assignments and progress/status checkpoints.
 
 The OpenCode runtime automatically reconnects its stable Intercom identity after a broker restart and reports the temporary reconnecting state through peer health metadata.
-- `agent_fleet` *(opt-in manager only)*: create, inspect, adopt, renew, stop, and clean up owned coworkers; inspect coordinated adapter versions and preview or execute source-aware updates using the same implementation as Pi
+- `agent_fleet` *(opt-in manager only)*: create, inspect, adopt, renew, stop, and clean up owned coworkers; inspect coordinated adapter versions and preview or execute source-aware updates using the same implementation as Pi. Manager-received messages from an owned worker automatically renew that exact worker's activity-bounded lease. Deleting a stopped record with `forget` requires `acknowledge: true`.
 
 ## Inbound Delivery Model
 
