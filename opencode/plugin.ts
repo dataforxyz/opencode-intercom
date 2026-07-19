@@ -37,6 +37,9 @@ export const OpenCodeIntercomPlugin: Plugin = async ({ client, directory, server
   let healthReporter: OpenCodePeerHealthReporter;
   const canUseTuiInjection = Boolean(process.stdin.isTTY || process.stdout.isTTY);
   const debugInject = process.env.OPENCODE_INTERCOM_DEBUG === "1";
+  const fleetManagementEnabled = isFleetManagementEnabled();
+  let fleetHeartbeatRunning = false;
+  let fleetHeartbeat: NodeJS.Timeout | undefined;
 
   function logInject(step: string, details: Record<string, unknown>): void {
     if (!debugInject) {
@@ -357,7 +360,15 @@ export const OpenCodeIntercomPlugin: Plugin = async ({ client, directory, server
     }
   }
 
-  runtime = new OpenCodeIntercomRuntime(undefined, directory, injectInbound);
+  runtime = new OpenCodeIntercomRuntime(undefined, directory, injectInbound, undefined, {
+    onInboundActivity(from) {
+      if (!fleetManagementEnabled) return;
+      void invokeAgentFleet({ action: "renew", id: from.id }, {
+        managerSessionId: runtime.getIdentity().sessionId,
+        cwd: directory,
+      }, { ...process.env, AGENT_INTERCOM_DISABLE_CLEANUP_TIMER: "1" }).catch(() => undefined);
+    },
+  });
   const runtimeIdentity = runtime.getIdentity();
   healthReporter = new OpenCodePeerHealthReporter({
     path: process.env.AGENT_INTERCOM_OPENCODE_HEALTH_PATH,
@@ -386,7 +397,27 @@ export const OpenCodeIntercomPlugin: Plugin = async ({ client, directory, server
     }
   })();
   if (activeSessionID) rememberBounded(knownSessionIDs, activeSessionID);
-  const fleetManagementEnabled = isFleetManagementEnabled();
+  if (fleetManagementEnabled) {
+    fleetHeartbeat = setInterval(() => {
+      if (fleetHeartbeatRunning) return;
+      fleetHeartbeatRunning = true;
+      void invokeAgentFleet({ action: "_heartbeat" }, {
+        managerSessionId: runtimeIdentity.sessionId,
+        cwd: directory,
+      }).then(async (result) => {
+        const requests = Array.isArray(result?.details?.checkpointRequests) ? result.details.checkpointRequests : [];
+        for (const request of requests) {
+          if (typeof request?.target !== "string" || typeof request?.message !== "string") continue;
+          await runtime.send(request.target, request.message);
+        }
+      }).catch((error) => {
+        logInject("fleet.heartbeat.error", { error: formatError(error) });
+      }).finally(() => {
+        fleetHeartbeatRunning = false;
+      });
+    }, 60_000);
+    fleetHeartbeat.unref?.();
+  }
   const stopControlServer = startOpenCodeControlServer({
     acceptsSession: sessionID => knownSessionIDs.has(sessionID),
     async handle(action) {
@@ -410,6 +441,8 @@ export const OpenCodeIntercomPlugin: Plugin = async ({ client, directory, server
 
   return {
     dispose: async () => {
+      if (fleetHeartbeat) clearInterval(fleetHeartbeat);
+      fleetHeartbeat = undefined;
       stopControlServer();
       healthReporter.update({ connected: false, ready: false, status: "stopped" });
       await runtime.disconnect();
@@ -433,6 +466,7 @@ export const OpenCodeIntercomPlugin: Plugin = async ({ client, directory, server
             fresh: tool.schema.boolean().optional().describe("Start a fresh persistent session rather than resume this worker ID."),
             all: tool.schema.boolean().optional().describe("Include workers owned by other manager sessions for list/status diagnostics."),
             execute: tool.schema.boolean().optional().describe("Actually execute cleanup or updates; false previews."),
+            acknowledge: tool.schema.boolean().optional().describe("Manager acknowledgment required before deleting a stopped worker record."),
             lines: tool.schema.number().optional().describe("Journal lines for logs."),
           },
           async execute(args, context) {

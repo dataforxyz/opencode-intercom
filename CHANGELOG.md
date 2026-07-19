@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Renew an owned worker's activity-bounded lifecycle only when the primary OpenCode manager receives a message from that exact worker, and expose manager acknowledgment for terminal `forget` operations.
 - Add ID-free `oldest`/`latest` selection for multiple pending asks from one sender, hide protocol IDs from pending output, and refuse a second unresolved ask to the same recipient.
 - Automatically reconnect the runtime with its stable Intercom identity after broker restarts and report reconnecting health state.
 - Clarify that assignments and progress/status checkpoints use `intercom_send`, reserving `intercom_ask` for blocking decisions.
